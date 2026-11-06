@@ -201,3 +201,54 @@ export const GHOST_SCORE_PER_UNIT = 300;
 export const TRACE_HZ = 10;
 export const TRACE_MAX_SECONDS = 15 * 60;
 export const OVERTAKE_MAX = 3;
+
+// --- style rank + ZONE (section 18) ---
+export const RANK_NAMES = ['D', 'C', 'B', 'A', 'S', 'SS', 'SSS'] as const;
+/** Style needed to hold each rank. */
+export const RANK_THRESH: readonly number[] = [0, 100, 250, 450, 700, 1000, 1400];
+/** Style lost per sim second at each rank. */
+export const RANK_DECAY: readonly number[] = [0, 15, 25, 40, 60, 85, 110];
+/** Score multiplier per rank (multiplies the combo / NITRO / DOUBLE chain). */
+export const RANK_MULT: readonly number[] = [1, 1.1, 1.25, 1.5, 2, 2.5, 3];
+export const RANK_S = 4;
+export const RANK_SS = 5;
+export const RANK_SSS = 6;
+/** Seconds the style may stay under the held rank's threshold before the rank drops. */
+export const RANK_DOWN_GRACE = 0.5;
+export const STYLE_ADD = {
+  near: 40,
+  insane: 90,
+  onBeat: 30,
+  beatStreak: 60,
+  clutch: 200,
+  shard: 8,
+  perfect: 80,
+  smash: 30,
+  item: 20,
+  overtake: 50,
+} as const;
+export const STYLE_PENALTY = { comboBreak: 150, shieldBreak: 200 } as const;
+/** Continuous SSS time that opens the ZONE. */
+export const ZONE_ENTER_TIME = 3;
+/** Score factor of ZONE Lv.1; every further level adds 1 (so 1 + Lv). */
+export const ZONE_BASE_FACTOR = 2;
+export const ZONE_LV_SECONDS = 10;
+/** Per beat the BANK grows by this fraction x Lv. */
+export const ZONE_BANK_COMPOUND = 0.01;
+export const ZONE_BREAK_PAY = 0.5;
+/** ZONE entry "charge": the world eases down to this timeScale over ZONE_CHARGE_DOWN real seconds, then back over ZONE_CHARGE_UP. */
+export const ZONE_CHARGE_SCALE = 0.2;
+export const ZONE_CHARGE_DOWN = 0.25;
+export const ZONE_CHARGE_UP = 0.3;
+
+// --- inflation (section 18.5) ---
+/** Near-miss base points are multiplied by (baseSpeed / SPEED_BASE) ^ this. */
+export const SPEED_SCORE_EXP = 1.5;
+/** Consecutive INSANEs double the INSANE bonus, up to 2^this. */
+export const INSANE_CHAIN_MAX_EXP = 10;
+/** First 10^n score milestone (100,000). */
+export const MILESTONE_FIRST_EXP = 5;
+/** Chain breakdown is shown from this total multiplier on. */
+export const BREAKDOWN_MIN = 10;
+/** Ghost depth: score difference per world unit is at least this fraction of the best's score at the same time. */
+export const GHOST_REL_PER_UNIT = 0.05;

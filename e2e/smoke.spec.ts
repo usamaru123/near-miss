@@ -63,7 +63,8 @@ test('title -> play -> death -> retry, with no console errors', async ({ page })
   expect(s1.alive).toBe(true);
   expect(s1.score).toBeGreaterThan(s0.score);
   expect(s1.t).toBeGreaterThan(s0.t);
-  const hudScore = Number(await page.locator('#score').innerText());
+  // scores below 1,000,000 show every digit with thousands separators
+  const hudScore = Number((await page.locator('#score').innerText()).replace(/,/g, ''));
   expect(hudScore).toBeGreaterThan(0);
   await expect(page.locator('#speed-val')).not.toHaveText('');
   await expect(page.locator('#bpm-val')).not.toHaveText('');

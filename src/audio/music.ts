@@ -80,6 +80,22 @@ const SYNC_RESYNC_BEATS = 1;
 const SYNC_UPDATE_S = 0.05;
 const STEP_TICKS_DIV = 4;
 
+/** ZONE hook: scale-degree offsets from the chord root, one 16th step each (null = rest). Rises to the 5th and answers. */
+const ZONE_HOOK: readonly (readonly (number | null)[])[] = [
+  [7, R, R, 9, R, 7, R, 4, 5, R, R, 4, R, 2, R, R],
+  [9, R, R, 11, R, 9, R, 7, 7, R, 9, R, 7, R, 4, R],
+  [7, R, R, 9, R, 11, R, 14, 12, R, R, 11, R, 9, R, R],
+  [14, R, 12, R, 11, R, 9, R, 7, R, 9, R, 11, R, 12, R],
+];
+/** Vocal-chop steps (16ths) and the formant vowels [F1, F2] in Hz (a, o, e, i). */
+const VOX_STEPS = [2, 3, 6, 10, 11, 14];
+const VOWELS: readonly (readonly [number, number])[] = [
+  [800, 1150],
+  [450, 800],
+  [530, 1840],
+  [270, 2290],
+];
+
 type Mode = 'off' | 'title' | 'play' | 'over';
 
 const mtof = (m: number): number => 440 * Math.pow(2, (m - 69) / 12);
@@ -135,6 +151,14 @@ export class Music {
   private bass!: Tone.MonoSynth;
   private acid!: Tone.MonoSynth;
   private growl!: Tone.MonoSynth;
+  // style layer + ZONE (DESIGN 18.3)
+  private shim!: Tone.Synth;
+  private zoneLead!: Tone.MonoSynth;
+  private vox!: Tone.MonoSynth;
+  private voxF1!: Tone.Filter;
+  private voxF2!: Tone.Filter;
+  private styleRank = 0;
+  private zone = false;
   private voices: { set(o: object): unknown }[] = [];
   // synth fallbacks for missing drum samples
   private fbKick!: Tone.MembraneSynth;
@@ -248,6 +272,47 @@ export class Music {
     });
     this.growl.chain(growlDist, growlHP, e.scBass);
 
+    // style layer from SS: a thin 16th shimmer high above the chord (nothing below 700 Hz)
+    this.shim = new Tone.Synth({
+      oscillator: { type: 'triangle' },
+      envelope: { attack: 0.003, decay: 0.06, sustain: 0, release: 0.03 },
+      volume: -28,
+    });
+    const shimHP = new Tone.Filter({ type: 'highpass', frequency: 700, rolloff: -12 });
+    this.shim.chain(shimHP, e.music);
+    shimHP.connect(e.delaySend);
+
+    // ZONE lead hook: gated fat saw, bright, with the delay on top
+    const zl = new Tone.Filter({ type: 'highpass', frequency: 320, rolloff: -24 });
+    this.zoneLead = new Tone.MonoSynth({
+      oscillator: { type: 'fatsawtooth', count: 3, spread: 36 },
+      envelope: { attack: 0.004, decay: 0.16, sustain: 0.35, release: 0.08 },
+      filter: { Q: 3, type: 'lowpass', rolloff: -24 },
+      filterEnvelope: { attack: 0.004, decay: 0.2, sustain: 0.5, release: 0.1, baseFrequency: 1500, octaves: 2.4 },
+      portamento: 0.02,
+      volume: -24,
+    });
+    this.zoneLead.chain(zl, e.music);
+    zl.connect(e.delaySend);
+
+    // vocal chops: a saw through two parallel formant band-passes (the vowel moves per step)
+    this.voxF1 = new Tone.Filter({ type: 'bandpass', frequency: 800, Q: 6 });
+    this.voxF2 = new Tone.Filter({ type: 'bandpass', frequency: 1150, Q: 8 });
+    const voxMix = new Tone.Gain(1.6);
+    const voxHP = new Tone.Filter({ type: 'highpass', frequency: 260, rolloff: -12 });
+    this.vox = new Tone.MonoSynth({
+      oscillator: { type: 'sawtooth' },
+      envelope: { attack: 0.005, decay: 0.09, sustain: 0.2, release: 0.05 },
+      filter: { Q: 0.5, type: 'lowpass', rolloff: -12 },
+      filterEnvelope: { attack: 0.001, decay: 0.05, sustain: 1, release: 0.05, baseFrequency: 6000, octaves: 0 },
+      volume: -21,
+    });
+    this.vox.connect(this.voxF1);
+    this.vox.connect(this.voxF2);
+    this.voxF1.connect(voxMix);
+    this.voxF2.connect(voxMix);
+    voxMix.chain(voxHP, e.music);
+
     // synth fallbacks (only used when a drum sample failed to load)
     const noiseVoice = (decay: number, filter: BiquadFilterType, freq: number, vol: number, q = 1): Tone.NoiseSynth => {
       const f = new Tone.Filter({ type: filter, frequency: freq, Q: q });
@@ -266,7 +331,7 @@ export class Music {
     this.fbRoll = noiseVoice(0.1, 'bandpass', 2400, -14, 0.7);
     this.fbCrash = noiseVoice(1.1, 'highpass', 4200, -14);
 
-    this.voices = [this.pad, this.chord, this.arp, this.lead, this.lead2, this.bass, this.acid, this.growl];
+    this.voices = [this.pad, this.chord, this.arp, this.lead, this.lead2, this.bass, this.acid, this.growl, this.shim, this.zoneLead, this.vox];
   }
 
   /** Effective Transport tempo (BPM x timeScale while playing). */
@@ -294,6 +359,8 @@ export class Music {
     this.tier = tier;
     this.od = false;
     this.nitro = false;
+    this.zone = false;
+    this.styleRank = 0;
     this.build();
     this.eng.musicHP.frequency.value = 20;
     this.begin('play', bpm);
@@ -393,6 +460,55 @@ export class Music {
     this.nitro = on;
     if (!this.built) return;
     this.eng.musicHP.frequency.rampTo(on ? 280 : 20, on ? 0.12 : 0.25);
+  }
+
+  /** Style rank 0..6: from SS (5) a shimmer layer is added to the groove (DESIGN 18.3). */
+  setRank(rank: number): void {
+    this.styleRank = rank;
+  }
+
+  /**
+   * ZONE entry: riser into the drop. The world is in slow motion for the first 0.25 s, so the riser covers the ~0.6 s
+   * the sequence takes; at the drop the filter opens and a crash + sub boom hit, then the ZONE layers (lead hook,
+   * vocal chops, harder sidechain) run from the next step.
+   */
+  zoneEnter(): void {
+    if (this.mode !== 'play' || !this.built || !this.eng.running) {
+      this.zone = true;
+      return;
+    }
+    const e = this.eng;
+    const t0 = e.now;
+    const t1 = t0 + 0.6;
+    const lp = e.musicLP.frequency;
+    lp.cancelScheduledValues(t0);
+    lp.setValueAtTime(Math.max(300, lp.value as number), t0);
+    lp.exponentialRampToValueAtTime(900, t1 - 0.02);
+    e.noise({ time: t0, dur: 0.6, type: 'bandpass', f0: 500, f1: 9500, q: 1.6, peak: 0.26, attack: 0.5, dest: e.drums, send: 0.1 });
+    e.osc({ time: t0, type: 'sawtooth', f0: 330, f1: 2000, dur: 0.6, peak: 0.05, attack: 0.5, dest: e.drums });
+    const sd = this.stepDur();
+    for (let t = t0 + 0.04, gap = sd * 2; t < t1 - 0.03; t += gap, gap = Math.max(sd * 0.5, gap * 0.8)) {
+      this.snare(t, -15 + (12 * (t - t0)) / 0.6, this.fbRoll);
+    }
+    lp.setValueAtTime(OD_LP, t1);
+    this.crash(t1, 0);
+    this.subBoom(t1);
+    this.clap(t1, -2);
+    e.duck(t1, 0.05, 0.3);
+    this.zone = true;
+  }
+
+  /** ZONE end: CLEAR closes the filter and opens it again (back to normal); BREAK dips it harder and faster. */
+  zoneEnd(clear: boolean): void {
+    this.zone = false;
+    if (!this.built || this.mode !== 'play' || !this.eng.running) return;
+    const lp = this.eng.musicLP.frequency;
+    const now = this.eng.now;
+    const target = this.od ? OD_LP : TIER_LP[this.tier - 1];
+    lp.cancelScheduledValues(now);
+    lp.setValueAtTime(Math.max(300, lp.value as number), now);
+    lp.exponentialRampToValueAtTime(clear ? 600 : 380, now + (clear ? 0.45 : 0.15));
+    lp.exponentialRampToValueAtTime(target, now + (clear ? 1.6 : 1.0));
   }
 
   /** The world slows via the sim's timeScale and sync() follows it; kept for API compatibility. */
@@ -543,7 +659,9 @@ export class Music {
     if (!ok) this.fbKick.triggerAttackRelease(50, 0.12, time, vel);
     else this.kickSub.triggerAttackRelease(54, 0.1, time, vel);
     e.noise({ time, dur: 0.014, type: 'highpass', f0: 2800, q: 0.7, peak: 0.16 * vel, attack: 0.003, dest: e.drums });
-    e.duck(time, 0.18, Math.min(0.2, this.stepDur() * 3));
+    // inside a ZONE the sidechain pumps much harder and longer
+    if (this.zone) e.duck(time, 0.07, Math.min(0.26, this.stepDur() * 3.6));
+    else e.duck(time, 0.18, Math.min(0.2, this.stepDur() * 3));
     this.kicks[this.kickIdx++ % this.kicks.length] = time;
     this.onKick?.(time);
   }
@@ -690,6 +808,29 @@ export class Music {
         this.acid.filterEnvelope.baseFrequency = 220 + 1500 * sweep * sweep;
         this.acid.triggerAttackRelease(mtof(root + 12 + (s16 === 6 ? 7 : s16 === 10 ? 10 : 0)), sd * 0.5, time, 0.7);
       }
+    }
+
+    // ---- style layer (SS and above): high 16th shimmer on the chord tones and a rolling extra hat ----
+    if (this.styleRank >= 5) {
+      const sn = chord[(s16 >> 1) % 3] + 36;
+      if (s16 % 2 === 1) this.shim.triggerAttackRelease(mtof(sn), sd * 0.4, time, this.styleRank >= 6 ? 0.9 : 0.6);
+      if (s16 % 4 === 1) this.hat16(time, -9);
+    }
+
+    // ---- ZONE: lead hook, vocal chops, extra drive ----
+    if (this.zone) {
+      const hook = ZONE_HOOK[v][s16];
+      if (hook !== null) {
+        const note = scaleNote(CHORD_DEG[ch] + hook);
+        this.zoneLead.triggerAttackRelease(mtof(note), sd * 1.6, time, 0.85);
+      }
+      if (VOX_STEPS.includes(s16)) {
+        const vow = VOWELS[(s16 + bar) & 3];
+        this.voxF1.frequency.setValueAtTime(vow[0], time);
+        this.voxF2.frequency.setValueAtTime(vow[1], time);
+        this.vox.triggerAttackRelease(mtof(chord[(s16 >> 2) % 3] + 12), sd * 0.7, time, 0.8);
+      }
+      if (s16 % 4 === 2) this.hat(time, false, -7);
     }
 
     // ---- NITRO: extra open-hat push on the off 8ths ----

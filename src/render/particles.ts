@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { TUNNEL_R } from '../game/constants';
 import { applyBend } from './bend';
 
-const LINE_COUNT = 260;
+const LINE_COUNT = 520;
 const LINE_DEPTH = 260;
 const DEBRIS_MAX = 420;
 
@@ -52,8 +52,9 @@ export class SpeedLines {
     this.len[i] = 0.5 + this.rnd() * 1.5;
   }
 
-  update(dt: number, speed: number, speedFrac: number, overdrive: boolean, color: THREE.Color): void {
-    const active = Math.min(LINE_COUNT, Math.floor((60 + 200 * speedFrac) * (overdrive ? 1.3 : 1) * this.scale));
+  /** `boost` doubles the lines at S rank and above (DESIGN 18.3). */
+  update(dt: number, speed: number, speedFrac: number, overdrive: boolean, color: THREE.Color, boost = 1): void {
+    const active = Math.min(LINE_COUNT, Math.floor((60 + 200 * speedFrac) * (overdrive ? 1.3 : 1) * this.scale * boost));
     const stretch = 0.012 + speedFrac * 0.03 + (overdrive ? 0.02 : 0);
     const p = this.pos;
     for (let i = 0; i < active; i++) {

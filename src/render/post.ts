@@ -59,6 +59,39 @@ export class RadialBlurEffect extends Effect {
   }
 }
 
+const ZONE_FRAG = /* glsl */ `
+uniform float amount;
+uniform vec3 tint;
+uniform float pulse;
+void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor) {
+  // coloured vignette: only the screen edges are tinted, the centre (obstacles appear there) is untouched
+  float r = length(uv - 0.5) * 1.4142;
+  float v = smoothstep(0.5, 1.05, r);
+  vec3 c = inputColor.rgb + tint * v * amount * (0.3 + 0.7 * pulse);
+  outputColor = vec4(c, inputColor.a);
+}
+`;
+
+/** ZONE colour vignette: additive tint at the screen edges that pulses with the beat. */
+export class ZoneEffect extends Effect {
+  constructor() {
+    super('ZoneEffect', ZONE_FRAG, {
+      uniforms: new Map<string, THREE.Uniform>([
+        ['amount', new THREE.Uniform(0)],
+        ['tint', new THREE.Uniform(new THREE.Color(1, 0.5, 1))],
+        ['pulse', new THREE.Uniform(0)],
+      ]),
+    });
+  }
+  set(amount: number, pulse: number): void {
+    (this.uniforms.get('amount') as THREE.Uniform<number>).value = amount;
+    (this.uniforms.get('pulse') as THREE.Uniform<number>).value = pulse;
+  }
+  setTint(r: number, g: number, b: number): void {
+    (this.uniforms.get('tint') as THREE.Uniform<THREE.Color>).value.setRGB(r, g, b);
+  }
+}
+
 /** Bloom (always), chromatic aberration (spikes / overdrive), vignette, noise, focus desaturation. */
 export class PostFx {
   readonly composer: EffectComposer;
@@ -68,7 +101,14 @@ export class PostFx {
   private readonly vignette: VignetteEffect;
   private readonly sat: HueSaturationEffect;
   private readonly noise: NoiseEffect;
+  private readonly zoneFx = new ZoneEffect();
   private spike = 0;
+  /** ZONE blend 0..1, beat pulse 0..1 (scaled for reduced flash by the caller), grain strength 0..1 */
+  zone = 0;
+  zonePulse = 0;
+  grain = 1;
+  /** transient desaturation 0..1 (rank-down, ZONE BREAK) */
+  desat = 0;
 
   constructor(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camera: THREE.Camera) {
     this.composer = new EffectComposer(renderer, { frameBufferType: THREE.HalfFloatType, multisampling: 0 });
@@ -91,7 +131,7 @@ export class PostFx {
     this.noise.blendMode.opacity.value = 0.07;
     this.composer.addPass(new EffectPass(camera, this.bloom));
     this.composer.addPass(new EffectPass(camera, this.blur));
-    this.composer.addPass(new EffectPass(camera, this.chroma, this.sat, this.vignette, this.noise));
+    this.composer.addPass(new EffectPass(camera, this.chroma, this.sat, this.vignette, this.zoneFx, this.noise));
   }
 
   private w = 1;
@@ -118,18 +158,27 @@ export class PostFx {
     this.spike = Math.min(0.02, this.spike + v);
   }
 
+  setZoneTint(r: number, g: number, b: number): void {
+    this.zoneFx.setTint(r, g, b);
+  }
+
   setBlurCenter(x: number, y: number): void {
     this.blur.setCenter(x, y);
   }
 
   update(dt: number, speedFrac: number, overdrive: boolean, focus: number, flashScale: number, kick = 0): void {
-    this.blur.strength = (0.03 + speedFrac * 0.11 + (overdrive ? 0.1 : 0) + kick) * (0.6 + 0.4 * flashScale);
+    // ZONE: stronger radial blur, per-beat chromatic pulse (30 % in reduced-flash mode), film grain, coloured vignette
+    this.blur.strength = (0.03 + speedFrac * 0.11 + (overdrive ? 0.1 : 0) + kick + this.zone * 0.07) * (0.6 + 0.4 * flashScale);
     this.spike *= Math.exp(-dt * 7);
+    this.desat *= Math.exp(-dt * 6);
     const base = overdrive ? 0.0042 : 0.0004 + speedFrac * 0.0008;
-    const ca = (base + this.spike) * (overdrive ? flashScale * 0.5 + 0.5 : 1);
+    const zoneCa = this.zone * this.zonePulse * 0.0032 * flashScale;
+    const ca = (base + this.spike) * (overdrive ? flashScale * 0.5 + 0.5 : 1) + zoneCa;
     this.chroma.offset.set(ca, ca * 0.8);
     this.bloom.intensity = (overdrive ? 2.2 : 1.4 + speedFrac * 0.5) * (0.8 + 0.2 * flashScale);
-    this.sat.saturation = -0.6 * focus;
+    this.sat.saturation = Math.max(-0.95, -0.6 * focus - this.desat * flashScale) + this.zone * 0.12;
+    this.noise.blendMode.opacity.value = 0.07 + this.zone * 0.17 * this.grain * (0.4 + 0.6 * flashScale);
+    this.zoneFx.set(this.zone, this.zonePulse);
     this.vignette.darkness = 0.55 + 0.35 * focus + 0.15 * speedFrac;
   }
 

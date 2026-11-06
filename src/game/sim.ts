@@ -35,6 +35,8 @@ import {
   SHARD_PICK_ANGLE,
   SHARD_PICK_Z,
   SHARD_SCORE,
+  STYLE_ADD,
+  MILESTONE_FIRST_EXP,
   SHIELD_GRACE,
   WARP_DRAIN_MULT,
   WARP_DURATION,
@@ -63,6 +65,21 @@ import {
 } from './constants';
 import { beatAt, bpmAtSpeed, gridOffsetSec, isOnBeat, LAUNCH_LOSS, launchFactor, speedAt, tierAt } from './difficulty';
 import { createSpawner, nextObstacle, peekObstacle } from './spawner';
+import {
+  addStyle,
+  checkMilestones,
+  createStyle,
+  createZone,
+  gain,
+  insaneChainFactor,
+  loseZone,
+  onComboBreak,
+  onShieldBreak,
+  speedFactor,
+  tickStyle,
+  totalMult,
+  zoneChargeScale,
+} from './style';
 import type { GameEvent, GameState, Input, Obstacle, PowerUp } from './types';
 
 export function createState(seed: number, itemsEnabled = true, launchRamp = false): GameState {
@@ -101,6 +118,11 @@ export function createState(seed: number, itemsEnabled = true, launchRamp = fals
     reducedFlash: false,
     beatBonus: true,
     clutch: { active: false, t: 0, dir: 0, obs: null, lastStart: -1e9 },
+    style: createStyle(),
+    zone: createZone(),
+    zoneChargeT: 0,
+    insaneChain: 0,
+    milestoneExp: MILESTONE_FIRST_EXP - 1,
     tier: 1,
     maxTier: 1,
     alive: true,
@@ -207,6 +229,8 @@ function kill(s: GameState): void {
   s.deathTimer = 0;
   s.deathDone = false;
   s.combo = 0;
+  s.insaneChain = 0;
+  loseZone(s);
   if (s.focusActive) {
     s.focusActive = false;
     push(s, { type: 'focusEnd' });
@@ -228,8 +252,15 @@ function award(s: GameState, kind: 'insane' | 'near', dist: number, pan: number,
   s.comboTimer = COMBO_TIMEOUT;
   const prevMult = s.multiplier;
   s.multiplier = multiplierFor(s.combo);
-  const points = (insane ? INSANE_SCORE : NEAR_SCORE) * s.multiplier * scoreMult(s) * (onBeat ? ONBEAT_MULT : 1);
-  s.score += points;
+  // base points scale with the speed, INSANE doubles with every consecutive INSANE (DESIGN 18.5)
+  let chain = 1;
+  if (insane) {
+    s.insaneChain++;
+    chain = insaneChainFactor(s.insaneChain);
+  } else s.insaneChain = 0;
+  const base = (insane ? INSANE_SCORE * chain : NEAR_SCORE) * speedFactor(s.baseSpeed);
+  const points = base * totalMult(s) * (onBeat ? ONBEAT_MULT : 1);
+  gain(s, points);
   if (!s.overdrive) s.adrenaline = Math.min(1, s.adrenaline + (insane ? INSANE_ADRENALINE : NEAR_ADRENALINE));
   s.focus = Math.min(1, s.focus + (insane ? INSANE_FOCUS : NEAR_FOCUS));
   s.beatStreak = onBeat ? s.beatStreak + 1 : 0;
@@ -243,11 +274,14 @@ function award(s: GameState, kind: 'insane' | 'near', dist: number, pan: number,
     pan,
     onBeat,
     streak: s.beatStreak,
+    chain,
   });
+  addStyle(s, (insane ? STYLE_ADD.insane : STYLE_ADD.near) + (onBeat ? STYLE_ADD.onBeat : 0));
   if (onBeat && s.beatStreak % BEAT_STREAK_EVERY === 0) {
-    const bonus = BEAT_STREAK_SCORE * s.multiplier * scoreMult(s);
-    s.score += bonus;
+    const bonus = BEAT_STREAK_SCORE * totalMult(s);
+    gain(s, bonus);
     push(s, { type: 'beatStreak', streak: s.beatStreak, points: bonus });
+    addStyle(s, STYLE_ADD.beatStreak);
   }
   if (s.multiplier > prevMult) push(s, { type: 'multUp', mult: s.multiplier });
   if (insane) requestHitStop(s, onBeat ? HITSTOP_INSANE_BEAT : HITSTOP_INSANE);
@@ -330,16 +364,18 @@ function resolveClutch(s: GameState): void {
     kill(s);
     return;
   }
-  const points = CLUTCH_SCORE * s.multiplier * scoreMult(s);
-  s.score += points;
+  const points = CLUTCH_SCORE * totalMult(s);
+  gain(s, points);
   if (!s.overdrive) s.adrenaline = Math.min(1, s.adrenaline + CLUTCH_ADRENALINE);
   push(s, { type: 'clutchSuccess', points, theta: s.theta });
+  addStyle(s, STYLE_ADD.clutch);
   requestHitStop(s, HITSTOP_CLUTCH);
 }
 
 function activate(s: GameState, p: PowerUp): void {
   push(s, { type: 'powerup', kind: p.kind, theta: s.theta });
   applyItem(s, p.kind);
+  addStyle(s, STYLE_ADD.item);
 }
 
 /** Apply a power-up's effect to the state (also used by tests / debug). */
@@ -369,9 +405,10 @@ export function applyItem(s: GameState, kind: ItemKind): void {
         else obs[w++] = o;
       }
       obs.length = w;
-      const points = n * SMASH_SCORE * s.multiplier * scoreMult(s);
-      s.score += points;
+      const points = n * SMASH_SCORE * totalMult(s);
+      gain(s, points);
       push(s, { type: 'emp', count: n, points });
+      addStyle(s, n * STYLE_ADD.smash);
       break;
     }
   }
@@ -420,17 +457,19 @@ function collectItems(s: GameState): void {
         s.chainGot = 0;
         s.chainBroken = false;
       }
-      const points = SHARD_SCORE * s.multiplier * scoreMult(s);
-      s.score += points;
+      const points = SHARD_SCORE * totalMult(s);
+      gain(s, points);
       if (!s.overdrive) s.adrenaline = Math.min(1, s.adrenaline + SHARD_ADRENALINE);
       push(s, { type: 'shard', points, chainIdx: s.chainRun, idx: it.idx, chainLen: it.chainLen, theta: it.theta });
+      addStyle(s, STYLE_ADD.shard);
       s.chainRun++;
       s.chainGot++;
       if (it.idx === it.chainLen - 1 && s.chainGot === it.chainLen && !s.chainBroken) {
-        const bonus = PERFECT_SCORE * s.multiplier * scoreMult(s);
-        s.score += bonus;
+        const bonus = PERFECT_SCORE * totalMult(s);
+        gain(s, bonus);
         if (!s.overdrive) s.adrenaline = Math.min(1, s.adrenaline + PERFECT_ADRENALINE);
         push(s, { type: 'perfectChain', points: bonus, theta: s.theta });
+        addStyle(s, STYLE_ADD.perfect);
       }
     } else if (!it.done && it.z > SHARD_PICK_Z) {
       keep = false;
@@ -503,6 +542,10 @@ export function step(s: GameState, input: Input, dt: number): GameEvent[] {
     }
     s.hitStopActive = stop;
     if (stop) s.timeScale = Math.min(s.timeScale, HITSTOP_TIMESCALE);
+    if (s.zoneChargeT > 0) {
+      s.timeScale = Math.min(s.timeScale, zoneChargeScale(s.zoneChargeT));
+      s.zoneChargeT = Math.max(0, s.zoneChargeT - dt);
+    }
     const ring = s.hitRing;
     s.hitRingSum += (stop ? 1 : 0) - ring[s.hitRingIdx];
     ring[s.hitRingIdx] = stop ? 1 : 0;
@@ -629,9 +672,10 @@ export function step(s: GameState, input: Input, dt: number): GameEvent[] {
       if (d < o.minDist) o.minDist = d;
       if (d === 0) {
         if (s.overdrive) {
-          const points = SMASH_SCORE * s.multiplier * scoreMult(s);
-          s.score += points;
+          const points = SMASH_SCORE * totalMult(s);
+          gain(s, points);
           push(s, { type: 'smash', points, theta: s.theta, id: o.id });
+          addStyle(s, STYLE_ADD.smash);
           removed = true;
         } else if (s.graceT > 0 || s.invincible) {
           o.touched = true;
@@ -639,6 +683,7 @@ export function step(s: GameState, input: Input, dt: number): GameEvent[] {
           s.shield = false;
           s.graceT = Math.max(s.graceT, SHIELD_GRACE);
           push(s, { type: 'shieldBreak', theta: s.theta, id: o.id });
+          onShieldBreak(s);
           removed = true;
         } else if (clutchReady(s) && penetration(o, s.theta, pen).p <= CLUTCH_MAX_PEN) {
           startClutch(s, o, pen.dir);
@@ -676,7 +721,10 @@ export function step(s: GameState, input: Input, dt: number): GameEvent[] {
 
   if (s.alive) collectItems(s);
 
-  if (!s.alive) return ev;
+  if (!s.alive) {
+    checkMilestones(s);
+    return ev;
+  }
 
   // ---- combo, adrenaline, running score ----
   if (s.combo > 0) {
@@ -686,11 +734,14 @@ export function step(s: GameState, input: Input, dt: number): GameEvent[] {
       s.combo = 0;
       s.multiplier = 1;
       s.beatStreak = 0;
+      onComboBreak(s);
     }
   }
   // A full gauge stays full until OVERDRIVE is used; otherwise it decays below the
   // 0.999 trigger threshold within ~70 ms and OVERDRIVE is nearly impossible to fire.
   if (!s.overdrive && s.adrenaline > 0 && s.adrenaline < 0.999) s.adrenaline = Math.max(0, s.adrenaline - ADRENALINE_DECAY * sdtEff);
-  s.score += s.speed * s.multiplier * scoreMult(s) * sdtEff;
+  gain(s, s.speed * totalMult(s) * sdtEff);
+  tickStyle(s, sdtEff);
+  checkMilestones(s);
   return ev;
 }

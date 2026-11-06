@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { TUNNEL_R } from '../game/constants';
 import { applyBend } from './bend';
+import { NORMAL_LINE_PEAK, ZONE_LINE_PEAK } from './palette';
 
 // Irregular ring spacing (8 rings per 24-unit period => >= 15 rings/s at 45 u/s) so that
 // at high speed the pattern does not alias against the display refresh rate.
@@ -20,6 +21,8 @@ export class Tunnel {
   private readonly longMat: THREE.LineBasicMaterial;
   private readonly lampMat: THREE.MeshBasicMaterial;
   private readonly scroll = new THREE.Group();
+  private readonly shellMat: THREE.MeshBasicMaterial;
+  private readonly shellNormal = new THREE.Color(0x05050f);
 
   constructor() {
     const r = TUNNEL_R + 0.02;
@@ -43,7 +46,7 @@ export class Tunnel {
     }
     const ringGeo = new THREE.BufferGeometry();
     ringGeo.setAttribute('position', new THREE.BufferAttribute(ringPos, 3));
-    this.ringMat = applyBend(new THREE.LineBasicMaterial({ color: 0xffffff, fog: true }));
+    this.ringMat = applyBend(new THREE.LineBasicMaterial({ color: 0xffffff, fog: true }), true);
     const rings = new THREE.LineSegments(ringGeo, this.ringMat);
     rings.frustumCulled = false;
 
@@ -63,14 +66,14 @@ export class Tunnel {
     }
     const longGeo = new THREE.BufferGeometry();
     longGeo.setAttribute('position', new THREE.BufferAttribute(sub, 3));
-    this.longMat = applyBend(new THREE.LineBasicMaterial({ color: 0xffffff, fog: true }));
+    this.longMat = applyBend(new THREE.LineBasicMaterial({ color: 0xffffff, fog: true }), true);
     const longs = new THREE.LineSegments(longGeo, this.longMat);
     longs.frustumCulled = false;
 
     // Wall lamps: short bright strips flowing past the ship (near-field parallax).
     const lampCount = PERIODS * LAMP_OFFSETS.length * LAMP_ANGLES;
     const lampGeo = new THREE.BoxGeometry(0.28, 0.1, 1.8);
-    this.lampMat = applyBend(new THREE.MeshBasicMaterial({ color: 0xffffff, fog: true }));
+    this.lampMat = applyBend(new THREE.MeshBasicMaterial({ color: 0xffffff, fog: true }), true);
     const lamps = new THREE.InstancedMesh(lampGeo, this.lampMat, lampCount);
     const m = new THREE.Matrix4();
     const q = new THREE.Quaternion();
@@ -94,10 +97,8 @@ export class Tunnel {
     lamps.frustumCulled = false;
 
     // Faint dark shell so the far end of the tunnel reads as a surface rather than a void.
-    const shell = new THREE.Mesh(
-      new THREE.CylinderGeometry(TUNNEL_R + 0.1, TUNNEL_R + 0.1, LONG_LEN, 48, 60, true),
-      applyBend(new THREE.MeshBasicMaterial({ color: 0x05050f, side: THREE.BackSide, fog: true })),
-    );
+    this.shellMat = applyBend(new THREE.MeshBasicMaterial({ color: 0x05050f, side: THREE.BackSide, fog: true }));
+    const shell = new THREE.Mesh(new THREE.CylinderGeometry(TUNNEL_R + 0.1, TUNNEL_R + 0.1, LONG_LEN, 48, 60, true), this.shellMat);
     shell.rotation.x = Math.PI / 2;
     shell.position.z = -LONG_LEN / 2 + PERIOD;
     shell.frustumCulled = false;
@@ -106,10 +107,17 @@ export class Tunnel {
     this.group.add(shell, this.scroll);
   }
 
-  update(dist: number, primary: THREE.Color, secondary: THREE.Color, pulse: number, speedFrac: number): void {
+  /**
+   * `bright` (1 = normal) scales the whole grid: A rank and above lights the tunnel lines up (DESIGN 18.3);
+   * `zone` (0..1) is the ZONE palette blend: black shell, rainbow lines (the rainbow itself is in the shader),
+   * deliberately calmer than the normal lines so obstacles stand out more, not less.
+   */
+  update(dist: number, primary: THREE.Color, secondary: THREE.Color, pulse: number, speedFrac: number, bright = 1, zone = 0): void {
     this.scroll.position.z = dist % PERIOD;
-    this.ringMat.color.copy(primary).multiplyScalar(0.5 + 0.55 * pulse + 0.25 * speedFrac);
-    this.longMat.color.copy(secondary).multiplyScalar(0.28 + 0.2 * pulse);
-    this.lampMat.color.copy(secondary).lerp(primary, 0.4).multiplyScalar(2.4);
+    const calm = 1 - zone * (1 - ZONE_LINE_PEAK / NORMAL_LINE_PEAK);
+    this.ringMat.color.copy(primary).multiplyScalar((0.5 + 0.55 * pulse + 0.25 * speedFrac) * bright * calm);
+    this.longMat.color.copy(secondary).multiplyScalar((0.28 + 0.2 * pulse) * bright * (1 + zone * 0.4));
+    this.lampMat.color.copy(secondary).lerp(primary, 0.4).multiplyScalar(2.4 * (1 + (bright - 1) * 0.5) * (1 - zone * 0.45));
+    this.shellMat.color.copy(this.shellNormal).multiplyScalar(1 - zone);
   }
 }

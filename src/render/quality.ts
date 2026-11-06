@@ -24,6 +24,12 @@ export interface QualitySettings {
   blurTaps: number;
   /** multiplier for particle / speed-line / streak counts */
   particleScale: number;
+  /** ZONE: fraction of the light ribbons that are drawn (DESIGN 18.4) */
+  ribbonScale: number;
+  /** ZONE: number of ship after-images (3 at full quality) */
+  afterimages: number;
+  /** ZONE: film grain pass strength multiplier */
+  grainScale: number;
 }
 
 /** Fills `out` for `tier` (0 = full quality). */
@@ -34,6 +40,10 @@ export function settingsFor(tier: number, out: QualitySettings): QualitySettings
   out.bloomHalf = t >= 4;
   out.blurTaps = t >= 5 ? 5 : 10;
   out.particleScale = t >= 6 ? 0.5 : 1;
+  // ZONE extras are the first things to go: ribbons thin out from tier 3, grain and after-images from tier 4
+  out.ribbonScale = t >= 6 ? 0.25 : t >= 5 ? 0.4 : t >= 3 ? 0.7 : 1;
+  out.afterimages = t >= 6 ? 0 : t >= 5 ? 1 : t >= 4 ? 2 : 3;
+  out.grainScale = t >= 4 ? 0 : t >= 3 ? 0.5 : 1;
   return out;
 }
 

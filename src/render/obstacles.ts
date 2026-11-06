@@ -145,7 +145,7 @@ export class ObstacleView {
   }
 
   /** `pulse` 0..1: beat pulse (strong on the downbeat, weak on the offbeat). */
-  sync(state: GameState, edgeColor: THREE.Color, fillColor: THREE.Color, pulse = 0): void {
+  sync(state: GameState, edgeColor: THREE.Color, fillColor: THREE.Color, pulse = 0, edgeGain = 1.7): void {
     this.frame++;
     const obs = state.obstacles;
     for (let i = 0; i < obs.length; i++) {
@@ -173,7 +173,7 @@ export class ObstacleView {
         const it = h.items[k];
         it.group.position.z = o.z;
         it.group.rotation.z = rot;
-        it.edgeMat.color.copy(edgeColor).multiplyScalar(bright * 1.7);
+        it.edgeMat.color.copy(edgeColor).multiplyScalar(bright * edgeGain);
         it.fillMat.color.copy(fillColor).multiplyScalar(bright);
         it.fillMat.opacity = 0.22 + 0.3 * near;
       }

@@ -31,6 +31,8 @@ export class CameraRig {
   /** Portrait widening (deg) added on top of the speed-driven FOV; 0 on landscape. */
   private fovOffset = 0;
   private camZ = CAM_Z;
+  /** SS / SSS / ZONE rattle the camera more (DESIGN 18.3); 1 = normal */
+  rumbleBoost = 1;
 
   constructor(aspect: number) {
     this.camera = new THREE.PerspectiveCamera(FOV_MIN, aspect, 0.1, 420);
@@ -101,7 +103,7 @@ export class CameraRig {
     const sr = Math.sin(t * 1.37 + 0.5) * 0.09 * shake;
 
     // constant speed-proportional rumble (separate from event shake)
-    const rum = (0.01 + 0.03 * speedFrac) * (overdrive ? 1.6 : 1) * shakeScale;
+    const rum = (0.01 + 0.03 * speedFrac) * (overdrive ? 1.6 : 1) * shakeScale * this.rumbleBoost;
     const rt = this.time * 173;
     const rx = (Math.sin(rt) + Math.sin(rt * 1.7 + 1.1) * 0.6) * rum;
     const ry = (Math.sin(rt * 1.3 + 2.0) + Math.sin(rt * 2.1) * 0.6) * rum;

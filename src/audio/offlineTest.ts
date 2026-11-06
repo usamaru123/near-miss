@@ -268,6 +268,50 @@ async function render(scenario: string, seconds: number, tap: 'master' | 'mix' |
       at(4.2, () => sfx.perfectChain());
       at(4.4, () => sfx.shieldBreak());
       at(4.5, () => sfx.boom());
+    } else if (scenario === 'zone' || scenario === 'zone-stack') {
+      // worst case with ZONE (DESIGN 18): top tier, SSS shimmer layer, ZONE hook + vocal chops, OVERDRIVE, NITRO,
+      // and the ZONE stingers on top of the usual pile of effects. 'zone-stack' fires every new stinger at the same instant.
+      music.start(6);
+      at(0.2, () => music.setRank(6));
+      at(0.5, () => music.setOverdrive(true));
+      at(0.5, () => music.setNitro(true));
+      at(1.0, () => {
+        music.zoneEnter();
+        sfx.zoneEnter();
+        sfx.rankUp(6);
+      });
+      for (let k = 0; k < 8; k++) {
+        const tt = 2 + k * 0.45;
+        at(tt, () => sfx.insane(0, -0.5));
+        at(tt + 0.1, () => sfx.smash());
+        at(tt + 0.1, () => sfx.shard(k));
+        at(tt + 0.2, () => sfx.whoosh(0.4, 1));
+        if (k % 3 === 0) at(tt + 0.25, () => sfx.zoneLevel(k + 2));
+      }
+      if (scenario === 'zone-stack') {
+        at(3, () => {
+          sfx.rankUp(6);
+          sfx.zoneEnter();
+          sfx.zoneLevel(5);
+          sfx.zoneClear();
+          sfx.zoneBreak();
+          sfx.milestone(9);
+          sfx.powerup('EMP');
+          sfx.overdriveStart();
+          sfx.perfectChain();
+        });
+      }
+      at(6, () => {
+        music.zoneEnd(true);
+        sfx.zoneClear();
+        sfx.milestone(7);
+      });
+      at(7, () => {
+        sfx.zoneBreak();
+        sfx.rankDown();
+      });
+      at(8, () => sfx.death());
+      at(8.2, () => sfx.boom());
     } else if (scenario === 'sfx' || scenario.startsWith('one-')) {
       // every effect on its own, 1.6 s apart, no music
       const list: (() => void)[] = [
@@ -293,6 +337,14 @@ async function render(scenario: string, seconds: number, tap: 'master' | 'mix' |
         () => sfx.countBeep(true),
         () => sfx.multUp(3),
         () => sfx.heart(true),
+        () => sfx.rankUp(2),
+        () => sfx.rankUp(6),
+        () => sfx.rankDown(),
+        () => sfx.zoneEnter(),
+        () => sfx.zoneLevel(3),
+        () => sfx.zoneClear(),
+        () => sfx.zoneBreak(),
+        () => sfx.milestone(8),
       ];
       if (scenario === 'sfx') {
         transport.start(0);

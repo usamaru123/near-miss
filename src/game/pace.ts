@@ -1,6 +1,7 @@
 // Ghost + personal-best pace (DESIGN 15.2). Pure logic: no DOM / storage access in here.
 import { angDiff, wrap } from './angles';
 import {
+  GHOST_REL_PER_UNIT,
   GHOST_SCORE_PER_UNIT,
   GHOST_Z_MAX,
   GHOST_Z_MIN,
@@ -89,9 +90,14 @@ export function paceDiff(tr: Trace, t: number, score: number): number {
   return score - sampleAt(tr, t).score;
 }
 
-/** Ghost depth from the score difference: best ahead -> in front (negative z), clamped to [-14, +3]. */
-export function ghostZ(diff: number): number {
-  return Math.max(GHOST_Z_MIN, Math.min(GHOST_Z_MAX, diff / GHOST_SCORE_PER_UNIT));
+/**
+ * Ghost depth from the score difference: best ahead -> in front (negative z), clamped to [-14, +3].
+ * One world unit is 300 points, or 5 % of the best's score at that time once scores have inflated
+ * (`ref` = the best's score then), so the ghost keeps moving sensibly at 1,000 or at 10^12 points.
+ */
+export function ghostZ(diff: number, ref = 0): number {
+  const unit = Math.max(GHOST_SCORE_PER_UNIT, ref * GHOST_REL_PER_UNIT);
+  return Math.max(GHOST_Z_MIN, Math.min(GHOST_Z_MAX, diff / unit));
 }
 
 // ---------------------------------------------------------------- persistence
@@ -175,8 +181,12 @@ export class PaceTracker {
     return this.overtakes;
   }
 
-  /** Call once per rendered frame (or sim step) with the sim time, score and ship angle. */
-  update(t: number, score: number, theta: number): PaceUpdate {
+  /**
+   * Call once per rendered frame (or sim step) with the sim time, score and ship angle.
+   * `live` (default = score) is what is compared with the best: during a ZONE it is score + BANK, because the
+   * banked points are on their way into the score; the recorded trace always holds the real, banked score.
+   */
+  update(t: number, score: number, theta: number, live = score): PaceUpdate {
     const o = this.out;
     o.overtake = false;
     o.newRecord = false;
@@ -184,12 +194,12 @@ export class PaceTracker {
     const tr = this.best;
     if (tr && this.hasTrace) {
       const s = sampleAt(tr, t, this.smp);
-      const diff = score - s.score;
+      const diff = live - s.score;
       o.hasBest = true;
       o.diff = diff;
       o.ghostVisible = s.live;
       o.ghostTheta = s.theta;
-      o.ghostZ = ghostZ(diff);
+      o.ghostZ = ghostZ(diff, s.score);
       if (s.live && this.prevDiff < 0 && diff >= 0 && this.overtakes < OVERTAKE_MAX) {
         this.overtakes++;
         o.overtake = true;
@@ -200,7 +210,7 @@ export class PaceTracker {
       o.diff = 0;
       o.ghostVisible = false;
     }
-    if (!this.recordShown && this.bestScore > 0 && score > this.bestScore) {
+    if (!this.recordShown && this.bestScore > 0 && live > this.bestScore) {
       this.recordShown = true;
       o.newRecord = true;
     }
@@ -209,7 +219,11 @@ export class PaceTracker {
 
   /** Finish the run: the trace to store (when it is a new best). */
   finish(finalScore: number): Trace {
-    this.recording.final = Math.floor(finalScore);
+    const fin = Math.floor(finalScore);
+    this.recording.final = fin;
+    // a ZONE that ended in death never paid its BANK: samples may not claim more than the final score
+    const sc = this.recording.sc;
+    for (let i = sc.length - 1; i >= 0 && sc[i] > fin; i--) sc[i] = fin;
     return this.recording;
   }
 }

@@ -13,6 +13,17 @@ import { ClutchArrow, GhostShip, TimingRing } from './beatfx';
 import { CameraRig } from './cameraRig';
 import { PickupRings, ShieldBubble, shockRadius } from './fx';
 import { ITEM_COLORS, ItemView } from './items';
+import {
+  NORMAL_BG,
+  NORMAL_EDGE_GAIN,
+  RANK_COLORS,
+  ZONE_BG,
+  ZONE_EDGE_GAIN,
+  ZONE_OBSTACLE_EDGE,
+  ZONE_OBSTACLE_FILL,
+  hsl,
+  zoneFadeStep,
+} from './palette';
 import { ObstacleView } from './obstacles';
 import { Debris, SpeedLines } from './particles';
 import { PostFx } from './post';
@@ -20,6 +31,7 @@ import { settingsFor } from './quality';
 import type { QualitySettings } from './quality';
 import { Ship } from './ship';
 import { Tunnel } from './tunnel';
+import { Afterimages, RibbonField } from './zonefx';
 
 export interface ViewState {
   /** 0.3 when reduced-flash is on, else 1 */
@@ -69,7 +81,20 @@ export class GameRenderer {
   private blurKick = 0;
   private readonly blurProj = new THREE.Vector3(0, 0, -60);
   /** adaptive quality (DESIGN 17.6) */
-  readonly quality: QualitySettings = settingsFor(0, { tier: 0, dprCap: 2, bloomHalf: false, blurTaps: 10, particleScale: 1 });
+  readonly quality: QualitySettings = settingsFor(0, { tier: 0, dprCap: 2, bloomHalf: false, blurTaps: 10, particleScale: 1, ribbonScale: 1, afterimages: 3, grainScale: 1 });
+  // ---- style rank + ZONE (DESIGN 18.3) ----
+  private readonly ribbons = new RibbonField();
+  private readonly after = new Afterimages();
+  private zoneAmt = 0;
+  private lastBar = -1;
+  private readonly bgNormal = new THREE.Color(NORMAL_BG);
+  private readonly bgZone = new THREE.Color(ZONE_BG);
+  private readonly obsEdge = new THREE.Color();
+  private readonly obsFill = new THREE.Color();
+  private readonly zoneEdge = new THREE.Color(ZONE_OBSTACLE_EDGE);
+  private readonly zoneFill = new THREE.Color(ZONE_OBSTACLE_FILL);
+  private readonly rgbTmp = [0, 0, 0];
+  private readonly bg = new THREE.Color(NORMAL_BG);
   private readonly box = new THREE.Box3();
   private readonly corner = new THREE.Vector3();
 
@@ -102,7 +127,7 @@ export class GameRenderer {
     this.rig.camera.add(this.shock);
     this.scene.add(this.rig.camera);
     this.ship.group.add(this.bubble.group);
-    this.scene.add(this.tunnel.group, this.obstacles.group, this.items.group, this.ship.group, this.lines.object, this.debris.mesh, this.rings.group, this.ghost.group, this.clutchArrow.group, this.timingRing.mesh);
+    this.scene.add(this.tunnel.group, this.obstacles.group, this.items.group, this.ship.group, this.lines.object, this.debris.mesh, this.rings.group, this.ghost.group, this.clutchArrow.group, this.timingRing.mesh, this.ribbons.mesh, this.after.group);
     this.post = new PostFx(this.renderer, this.scene, this.rig.camera);
     this.resize();
   }
@@ -119,6 +144,9 @@ export class GameRenderer {
     this.post.setQuality(q.bloomHalf, q.blurTaps);
     this.lines.scale = q.particleScale;
     this.debris.scale = q.particleScale;
+    this.ribbons.scale = q.ribbonScale;
+    this.after.count = q.afterimages;
+    this.post.grain = q.grainScale;
     this.resize();
   }
 
@@ -148,6 +176,10 @@ export class GameRenderer {
     this.ship.setVisible(true);
     this.ghost.update(false, 0, 0, 0, 1);
     this.timingRing.hide();
+    this.after.clear();
+    this.zoneAmt = 0;
+    this.lastBar = -1;
+    this.post.desat = 0;
     this.rig.reset(state.theta);
   }
 
@@ -228,6 +260,68 @@ export class GameRenderer {
         break;
       case 'emp':
         this.rig.addTrauma(0.8);
+        break;
+      case 'rankUp': {
+        this.shipPos(state);
+        const c = this.tmpColor.setHex(RANK_COLORS[e.rank]);
+        // rings stay small and see-through: they are around the ship, close to the camera, and must not hide obstacles
+        this.rings.emit(this.px, this.py, c, 3.5 + e.rank * 0.35, 0.45, 0.6);
+        if (e.rank >= 5) this.rings.emit(this.px, this.py, c, 6, 0.6, 0.4);
+        this.debris.emit(this.px, this.py, 0, 14 + e.rank * 6, 9 + e.rank, 0.7, 0.13, c.r, c.g, c.b, state.speed * 0.4);
+        this.rig.addTrauma(0.12 + e.rank * 0.05);
+        // the chromatic-aberration flash of the new letter also shakes the whole picture a little
+        this.post.addSpike((0.005 + e.rank * 0.0018) * f);
+        this.rig.fovKick((1.5 + e.rank * 0.8) * (0.4 + 0.6 * f));
+        break;
+      }
+      case 'rankDown':
+        this.post.desat = 0.9;
+        this.rig.addTrauma(0.25);
+        this.post.addSpike(0.004 * f);
+        break;
+      case 'zoneEnter': {
+        this.shipPos(state);
+        this.triggerShock(0xffe9a8, 0.8, 1.8);
+        const c = this.tmpColor;
+        for (let i = 0; i < 3; i++) {
+          hsl(i / 3, 1, 0.6, this.rgbTmp);
+          c.setRGB(this.rgbTmp[0], this.rgbTmp[1], this.rgbTmp[2]);
+          this.rings.emit(this.px, this.py, c, 3.5 + i * 1.6, 0.45 + i * 0.15, 0.5);
+          this.debris.emit(this.px, this.py, 0, 22, 12 + i * 3, 0.9, 0.14, this.rgbTmp[0], this.rgbTmp[1], this.rgbTmp[2], state.speed * 0.45);
+        }
+        this.rig.addTrauma(0.95);
+        this.post.addSpike(0.02 * f);
+        this.rig.fovKick(14 * (0.4 + 0.6 * f));
+        this.blurKick = 0.5 * f;
+        break;
+      }
+      case 'zoneLevel':
+        this.shipPos(state);
+        this.rings.emit(this.px, this.py, this.tmpColor.setHex(0xffe9a8), 5, 0.5, 0.5);
+        this.rig.addTrauma(0.35);
+        this.post.addSpike(0.008 * f);
+        this.rig.fovKick(6 * (0.4 + 0.6 * f));
+        break;
+      case 'zoneClear':
+        this.shipPos(state);
+        this.rings.emit(this.px, this.py, this.tmpColor.setHex(0xffe9a8), 6, 0.6, 0.5);
+        this.debris.emit(this.px, this.py, 0, 60, 14, 1.0, 0.14, 1, 0.85, 0.3, state.speed * 0.45);
+        this.rig.addTrauma(0.5);
+        this.post.addSpike(0.012 * f);
+        break;
+      case 'zoneBreak':
+        this.shipPos(state);
+        this.rings.emit(this.px, this.py, this.tmpColor.setHex(0xff2030), 5.5, 0.5, 0.5);
+        this.debris.emit(this.px, this.py, 0, 50, 15, 0.9, 0.14, 1, 0.15, 0.2, state.speed * 0.4);
+        this.post.desat = 1;
+        this.rig.addTrauma(0.8);
+        this.post.addSpike(0.016 * f);
+        break;
+      case 'scoreMilestone':
+        this.triggerShock(0xffee66, 0.4, 1.2);
+        this.rig.fovKick(8 * (0.4 + 0.6 * f));
+        this.rig.addTrauma(0.3);
+        this.post.addSpike(0.008 * f);
         break;
       case 'death':
         this.rig.addTrauma(SHAKE.death);
@@ -327,6 +421,11 @@ export class GameRenderer {
     return Math.max(maxX - minX, maxY - minY) / Math.min(this.width, this.height);
   }
 
+  /** ZONE palette blend 0..1 (debug / tests). */
+  get zoneAmount(): number {
+    return this.zoneAmt;
+  }
+
   get speedBlurScale(): number {
     return this.blurKick;
   }
@@ -365,14 +464,33 @@ export class GameRenderer {
     this.focusAmt += ((state.focusActive || state.clutch.active ? 1 : 0) - this.focusAmt) * (1 - Math.exp(-realDt * 9));
     this.nitroAmt += ((state.nitroT > 0 && state.alive ? 1 : 0) - this.nitroAmt) * (1 - Math.exp(-realDt * 8));
 
+    // ---- style rank / ZONE world changes (DESIGN 18.3) ----
+    const rank = state.alive ? state.style.rank : 0;
+    const zoneOn = state.alive && state.zone.active;
+    // the palette snaps over ~0.12 s, or fades over 0.5 s in reduced-flash mode
+    const zStep = zoneFadeStep(realDt, view.flashScale < 1);
+    this.zoneAmt = zoneOn ? Math.min(1, this.zoneAmt + zStep) : Math.max(0, this.zoneAmt - zStep);
+    const zone = this.zoneAmt;
+    this.bg.copy(this.bgNormal).lerp(this.bgZone, zone);
+    (this.scene.background as THREE.Color).copy(this.bg);
+    (this.scene.fog as THREE.Fog).color.copy(this.bg);
+    bendUniforms.uZone.value = zone;
+    bendUniforms.uZoneHue.value = state.beatPos * 0.0625 + this.time * 0.04;
+    // A and above light the tunnel lines up
+    const lineBright = 1 + Math.max(0, rank - 2) * 0.12;
+    this.obsEdge.copy(this.edge).lerp(this.zoneEdge, zone);
+    this.obsFill.copy(this.secondary).lerp(this.zoneFill, zone);
+
     bendUniforms.uBendTime.value = this.time;
-    this.tunnel.update(state.dist, this.primary, this.secondary, view.beat, speedFrac);
-    this.obstacles.sync(state, this.edge, this.secondary, view.beat);
+    this.tunnel.update(state.dist, this.primary, this.secondary, view.beat, speedFrac, lineBright, zone);
+    this.obstacles.sync(state, this.obsEdge, this.obsFill, view.beat, NORMAL_EDGE_GAIN + (ZONE_EDGE_GAIN - NORMAL_EDGE_GAIN) * zone);
+    this.ribbons.update(realDt, this.time, state.dist, zone, state.zone.lv, view.beat, view.flashScale);
+    this.after.update(realDt, state.theta, state.angVel, state.alive ? zone : 0, view.flashScale);
     this.items.sync(state, this.edge, sdt);
     this.bubble.update(state.shield && state.alive, realDt);
     this.updateBeatFx(state, view, realDt);
     this.rings.update(realDt);
-    this.lines.update(sdt, state.speed, speedFrac, state.overdrive, this.edge);
+    this.lines.update(sdt, state.speed, speedFrac, state.overdrive, this.edge, rank >= 4 ? 2 : 1);
 
     if (state.alive) {
       this.ship.update(state.theta, state.angVel, realDt, this.edge, state.overdrive || this.nitroAmt > 0.5, speedFrac + this.nitroAmt * 0.3, state.overdrive || this.nitroAmt > 0.5);
@@ -380,10 +498,20 @@ export class GameRenderer {
       const x = Math.cos(state.theta) * SHIP_RADIUS;
       const y = Math.sin(state.theta) * SHIP_RADIUS;
       this.debris.emit(x, y, 0.8, 1, 1.5, 0.28, 0.13, this.primary.r, this.primary.g, this.primary.b, state.speed * 0.55);
+      if (zone > 0.5) {
+        // rainbow aura trail
+        hsl((this.time * 0.7) % 1, 1, 0.6, this.rgbTmp);
+        this.debris.emit(x, y, 0.4, 2, 2.4, 0.5, 0.2, this.rgbTmp[0], this.rgbTmp[1], this.rgbTmp[2], state.speed * 0.5);
+      }
     }
     this.debris.update(state.alive ? sdt : realDt * 0.3);
 
-    this.rig.update(state.theta, state.angVel, state.baseSpeed, state.overdrive, realDt, view.flashScale, this.nitroAmt * 12 * (0.5 + 0.5 * view.flashScale));
+    // ZONE: FOV +8 deg and a small kick at every bar line; SS and above rattle the camera more
+    const bar = Math.floor(state.beatPos / 4);
+    if (zoneOn && this.lastBar >= 0 && bar !== this.lastBar) this.rig.fovKick(2.5 * (0.4 + 0.6 * view.flashScale));
+    this.lastBar = bar;
+    this.rig.rumbleBoost = 1 + (rank >= 5 ? 0.7 : 0) + (rank >= 6 ? 0.6 : 0) + zone * 0.5;
+    this.rig.update(state.theta, state.angVel, state.baseSpeed, state.overdrive, realDt, view.flashScale, this.nitroAmt * 12 * (0.5 + 0.5 * view.flashScale) + zone * 8);
     // shockwave ring (screen space, radius in half-short-side units; see fx.ts)
     if (this.shockT < 1) {
       this.shockT = Math.min(1, this.shockT + realDt / 0.8);
@@ -402,6 +530,10 @@ export class GameRenderer {
     this.blurKick *= Math.exp(-realDt * 4);
     this.blurProj.set(0, 0, -60).project(this.rig.camera);
     this.post.setBlurCenter(this.blurProj.x * 0.5 + 0.5, this.blurProj.y * 0.5 + 0.5);
+    this.post.zone = zone;
+    this.post.zonePulse = view.beat;
+    hsl((this.time * 0.25) % 1, 1, 0.55, this.rgbTmp);
+    this.post.setZoneTint(this.rgbTmp[0], this.rgbTmp[1], this.rgbTmp[2]);
     this.post.update(realDt, speedFrac, state.overdrive, this.focusAmt, view.flashScale, this.blurKick + this.nitroAmt * 0.09);
     this.post.render(realDt);
   }

@@ -13,6 +13,7 @@ import {
 } from '../src/game/constants';
 import { speedAt, tierAt } from '../src/game/difficulty';
 import { makeObstacle } from '../src/game/spawner';
+import { speedFactor } from '../src/game/style';
 import type { Arc, GameEvent, GameState, Input } from '../src/game/types';
 
 const idle = (): Input => ({ move: 0, focus: false, overdrive: false });
@@ -163,7 +164,8 @@ describe('near miss', () => {
     expect(s.adrenaline).toBeGreaterThan(0.24);
     expect(s.adrenaline).toBeLessThanOrEqual(0.25);
     expect(s.focus).toBeGreaterThan(0.69);
-    if (e && e.type === 'insane') expect(e.points).toBe(1500);
+    // base 1500 x speed factor (baseSpeed ~50 right at the start -> 1.0x..1.05x), rank D, x1
+    if (e && e.type === 'insane') expect(e.points / 1500).toBeCloseTo(speedFactor(s.baseSpeed), 1);
   });
   it('NEAR MISS at 4.1deg and 9.9deg; none at 10.1deg', () => {
     for (const [d, expected] of [
@@ -178,7 +180,7 @@ describe('near miss', () => {
       expect(hit?.type ?? null).toBe(expected);
       if (expected) {
         expect(s.adrenaline).toBeGreaterThan(0.11);
-        if (hit && hit.type === 'nearMiss') expect(hit.points).toBe(500);
+        if (hit && hit.type === 'nearMiss') expect(hit.points / 500).toBeCloseTo(speedFactor(s.baseSpeed), 1);
       } else {
         expect(s.combo).toBe(0);
       }
@@ -213,7 +215,13 @@ describe('combo and multiplier', () => {
     expect(s.combo).toBe(4);
     expect(s.multiplier).toBe(2);
     const pts = ev.filter((e) => e.type === 'nearMiss').map((e) => (e.type === 'nearMiss' ? e.points : 0));
-    expect(pts).toEqual([500, 500, 500, 1000]);
+    // 500 x speed factor x combo multiplier x rank multiplier (style 40 per near miss: C from the 3rd on)
+    const f = speedFactor(50.5);
+    expect(pts.length).toBe(4);
+    expect(pts[0] / f).toBeCloseTo(500, -1);
+    expect(pts[1] / f).toBeCloseTo(500, -1);
+    expect(pts[2] / f).toBeCloseTo(500, -1);
+    expect(pts[3] / f).toBeCloseTo(500 * 2 * 1.1, -1);
   });
   it('combo breaks 3 s after the last near miss', () => {
     const s = fresh();

@@ -13,6 +13,7 @@ import {
 import { beatAt, bpmAt, bpmAtSpeed, distAt, gridOffsetSec, isOnBeat, quantizeGapBeat, speedAt, timeAtBeat } from '../src/game/difficulty';
 import { createState, requestHitStop, step } from '../src/game/sim';
 import { makeObstacle } from '../src/game/spawner';
+import { speedFactor } from '../src/game/style';
 import type { GameEvent, GameState, Input } from '../src/game/types';
 
 const SEEDS = [1, 2, 3, 42, 99, 1234, 31337, 777, 2024, 987654321];
@@ -135,19 +136,20 @@ describe('ON BEAT', () => {
     expect(e1).toBeTruthy();
     if (e1 && e1.type === 'insane') {
       expect(e1.onBeat).toBe(true);
-      expect(e1.points).toBeCloseTo(INSANE_SCORE * ONBEAT_MULT, 6);
+      // base x ON BEAT x the speed factor of the (high) speed this pass happens at
+      expect(e1.points / (INSANE_SCORE * ONBEAT_MULT)).toBeCloseTo(speedFactor(on.s.baseSpeed), 1);
     }
     const off = passAt(0.105, 3 * DEG);
     const e2 = off.ev.find((e) => e.type === 'insane');
     expect(e2).toBeTruthy();
     if (e2 && e2.type === 'insane') {
       expect(e2.onBeat).toBe(false);
-      expect(e2.points).toBe(INSANE_SCORE);
+      expect(e2.points / INSANE_SCORE).toBeCloseTo(speedFactor(off.s.baseSpeed), 1);
     }
     const near = passAt(-0.04, 8 * DEG);
     const e3 = near.ev.find((e) => e.type === 'nearMiss');
     expect(e3).toBeTruthy();
-    if (e3 && e3.type === 'nearMiss') expect(e3.points).toBeCloseTo(NEAR_SCORE * ONBEAT_MULT, 6);
+    if (e3 && e3.type === 'nearMiss') expect(e3.points / (NEAR_SCORE * ONBEAT_MULT)).toBeCloseTo(speedFactor(near.s.baseSpeed), 1);
   });
 
   it('BEAT STREAK: every 4th consecutive ON BEAT near miss pays +2000 x mult; an off-beat one resets it', () => {
@@ -160,7 +162,8 @@ describe('ON BEAT', () => {
     const b = streaks[0];
     if (b.type === 'beatStreak') {
       expect(b.streak).toBe(4);
-      expect(b.points).toBe(BEAT_STREAK_SCORE * 2); // combo 4 -> x2
+      // combo 4 -> x2, and four ON BEAT near misses (+70 style each) have lifted the rank to B (x1.25)
+      expect(b.points).toBe(BEAT_STREAK_SCORE * 2 * 1.25);
     }
     passAt(0.105, 8 * DEG, s);
     expect(s.beatStreak).toBe(0);

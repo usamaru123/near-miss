@@ -69,6 +69,7 @@ interface Ring {
   t: number;
   life: number;
   max: number;
+  alpha: number;
 }
 
 /** Pooled expanding rings in world space around the ship (pickups, shard flashes). */
@@ -92,15 +93,17 @@ export class PickupRings {
       const mesh = new THREE.Mesh(geo, mat);
       mesh.visible = false;
       this.group.add(mesh);
-      this.rings.push({ mesh, mat, t: 1, life: 0.5, max: 4 });
+      this.rings.push({ mesh, mat, t: 1, life: 0.5, max: 4, alpha: 0.9 });
     }
   }
 
-  emit(x: number, y: number, color: THREE.Color, max: number, life: number): void {
+  /** `alpha` (default 0.9) lets big rings be see-through so they never wall off the tunnel (DESIGN 14). */
+  emit(x: number, y: number, color: THREE.Color, max: number, life: number, alpha = 0.9): void {
     const r = this.rings[this.idx++ % this.rings.length];
     r.t = 0;
     r.life = life;
     r.max = max;
+    r.alpha = alpha;
     r.mat.color.copy(color).multiplyScalar(2);
     r.mesh.position.set(x, y, 0.2);
     r.mesh.visible = true;
@@ -113,7 +116,7 @@ export class PickupRings {
       const e = 1 - (1 - r.t) * (1 - r.t);
       const s = 0.4 + e * r.max;
       r.mesh.scale.set(s, s, 1);
-      r.mat.opacity = (1 - r.t) * 0.9;
+      r.mat.opacity = (1 - r.t) * r.alpha;
       if (r.t >= 1) r.mesh.visible = false;
     }
   }

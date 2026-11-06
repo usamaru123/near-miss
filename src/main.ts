@@ -18,7 +18,9 @@ import {
   START_THETA,
   TIERS,
 } from './game/constants';
-import { createState, forceClutch, forceDeath, spawnItemAhead, step } from './game/sim';
+import { createState, forceClutch, forceDeath, multiplierFor, spawnItemAhead, step } from './game/sim';
+import { formatScore } from './game/format';
+import { awardOvertake, forceZone, setStyle } from './game/style';
 import { PaceTracker, parseTrace, resultVsBest, serializeTrace } from './game/pace';
 import type { Trace } from './game/pace';
 import type { GameEvent, GameState, Input } from './game/types';
@@ -57,6 +59,17 @@ interface NearMissDebug {
   getView(): Record<string, unknown>;
   /** Force an adaptive-quality tier (0 = full) for diagnostics. */
   setQualityTier(n: number): void;
+  /** Jump the style meter to `n` (rank changes at once, with their effects). */
+  setStyle(n: number): void;
+  /** Open a ZONE right now (SSS, as if the 3 s had been held). */
+  forceZone(): void;
+  /** Set the combo (and its multiplier) and keep it alive; `expireCombo()` lets it break on the next step. */
+  setCombo(n: number): void;
+  expireCombo(): void;
+  /** Add `n` points to the running ZONE BANK (e2e: makes CLEAR / BREAK / LOST show big numbers). */
+  addBank(n: number): void;
+  /** Force the next score through the sim as if it were `n` (e2e: milestones / formatting). */
+  setScore(n: number): void;
 }
 declare global {
   interface Window {
@@ -232,6 +245,7 @@ function resetRunState(seed: number): void {
   audio.restoreFilter();
   music.setNitro(false);
   music.setFocus(false);
+  music.setRank(0);
   hud.clearPopups();
   hud.setPace(null);
 }
@@ -306,7 +320,7 @@ function finishRun(): void {
   const newRecord = score > best;
   if (newRecord) {
     best = score;
-    lsSet(LS_BEST, String(best));
+    lsSet(LS_BEST, String(best)); // a double: may be far beyond 2^53, saved and compared as a float
     lsSet(LS_GHOST, serializeTrace(pace.finish(score)));
   }
   hud.setVisible(false);
@@ -317,6 +331,9 @@ function finishRun(): void {
     maxCombo: state.maxCombo,
     topSpeedKmh: Math.round(state.maxSpeed * KMH_FACTOR),
     tier: state.maxTier,
+    rank: state.style.maxRank,
+    zoneLv: state.zone.maxLv,
+    lost: state.zone.lost,
     vs: prevBest > 0 ? resultVsBest(score, prevBest) : null,
   });
   gameOverAt = performance.now();
@@ -375,7 +392,7 @@ function handleEvent(e: GameEvent): void {
     case 'nearMiss':
       sfx.nearMiss(e.dist, e.pan);
       renderer.shipScreen(shipPos);
-      hud.floater('NEAR MISS +' + e.points + (e.onBeat ? ' \u00b7 ON BEAT' : ''), shipPos.x, shipPos.y + 34, e.onBeat ? 'insane' : 'near');
+      hud.floater('NEAR MISS +' + formatScore(e.points) + (e.onBeat ? ' \u00b7 ON BEAT' : ''), shipPos.x, shipPos.y + 34, e.onBeat ? 'insane' : 'near', e.points);
       hud.popScore();
       hud.flash(e.onBeat ? '#7df9ff' : '#ffffff', e.onBeat ? 0.12 : 0.08);
       if (e.onBeat) sfx.beatAccent(false);
@@ -383,14 +400,20 @@ function handleEvent(e: GameEvent): void {
     case 'insane':
       sfx.insane(e.dist, e.pan);
       renderer.shipScreen(shipPos);
-      hud.floater('INSANE!! +' + e.points + (e.onBeat ? ' \u00b7 ON BEAT' : ''), shipPos.x, shipPos.y + 34, 'insane');
+      hud.floater(
+        (e.chain > 1 ? 'INSANE \u00d7' + e.chain + ' CHAIN!! +' : 'INSANE!! +') + formatScore(e.points) + (e.onBeat ? ' \u00b7 ON BEAT' : ''),
+        shipPos.x,
+        shipPos.y + 34,
+        'insane',
+        e.points,
+      );
       hud.popScore();
       hud.flash(e.onBeat ? '#7df9ff' : '#ffee66', 0.2);
       if (e.onBeat) sfx.beatAccent(true);
       break;
     case 'beatStreak':
       sfx.beatStreak();
-      hud.popup('BEAT STREAK x' + e.streak + ' +' + e.points, 'beat');
+      hud.popup('BEAT STREAK x' + e.streak + ' +' + formatScore(e.points), 'beat');
       hud.popScore();
       break;
     case 'clutchStart':
@@ -401,7 +424,7 @@ function handleEvent(e: GameEvent): void {
     case 'clutchSuccess':
       haptic(30);
       sfx.clutchSuccess();
-      hud.popup('CLUTCH!! +' + e.points, 'clutch');
+      hud.popup('CLUTCH!! +' + formatScore(e.points), 'clutch');
       hud.popScore();
       hud.flash('#ffffff', 0.5);
       applyMuffle();
@@ -412,7 +435,7 @@ function handleEvent(e: GameEvent): void {
     case 'smash':
       sfx.smash();
       renderer.shipScreen(shipPos);
-      hud.floater('SMASH +' + e.points, shipPos.x, shipPos.y + 34, 'smash');
+      hud.floater('SMASH +' + formatScore(e.points), shipPos.x, shipPos.y + 34, 'smash', e.points);
       hud.popScore();
       hud.flash('#ff6070', 0.18);
       break;
@@ -426,7 +449,7 @@ function handleEvent(e: GameEvent): void {
       break;
     case 'perfectChain':
       sfx.perfectChain();
-      hud.popup('PERFECT CHAIN! +' + e.points, 'perfect');
+      hud.popup('PERFECT CHAIN! +' + formatScore(e.points), 'perfect');
       hud.popScore();
       hud.flash('#ffee66', 0.14);
       break;
@@ -448,7 +471,7 @@ function handleEvent(e: GameEvent): void {
       break;
     case 'emp':
       sfx.emp();
-      if (e.count > 0) hud.itemPopup('EMP x' + e.count + ' +' + e.points, '#ff4a5a');
+      if (e.count > 0) hud.itemPopup('EMP x' + e.count + ' +' + formatScore(e.points), '#ff4a5a');
       break;
     case 'multUp':
       sfx.multUp(e.mult);
@@ -487,6 +510,46 @@ function handleEvent(e: GameEvent): void {
       break;
     case 'comboBreak':
       break;
+    case 'rankUp':
+      sfx.rankUp(e.rank);
+      music.setRank(e.rank);
+      hud.rankUp(e.rank, e.from);
+      if (e.rank >= 4) haptic(15);
+      break;
+    case 'rankDown':
+      sfx.rankDown();
+      music.setRank(e.rank);
+      hud.rankDown(e.rank, e.from);
+      break;
+    case 'zoneEnter':
+      haptic(40);
+      sfx.zoneEnter();
+      music.zoneEnter();
+      hud.zoneEnter();
+      break;
+    case 'zoneLevel':
+      sfx.zoneLevel(e.lv);
+      hud.zoneLevel(e.lv);
+      break;
+    case 'zoneClear':
+      haptic(30);
+      sfx.zoneClear();
+      music.zoneEnd(true);
+      hud.zoneClear(e.bank);
+      break;
+    case 'zoneBreak':
+      haptic(40);
+      sfx.zoneBreak();
+      music.zoneEnd(false);
+      hud.zoneBreak(e.paid);
+      break;
+    case 'zoneLost':
+      hud.zoneLost(e.bank);
+      break;
+    case 'scoreMilestone':
+      sfx.milestone(e.exp);
+      hud.scoreBanner(e.exp);
+      break;
   }
   renderer.onEvent(e, state);
 }
@@ -499,7 +562,8 @@ function simBeatPulse(): number {
 }
 
 function updatePace(): void {
-  const u = pace.update(state.t, state.score, state.theta);
+  // during a ZONE the banked points count towards the comparison; the recorded trace holds the real score
+  const u = pace.update(state.t, state.score, state.theta, state.score + state.zone.bank);
   ghostView.visible = u.ghostVisible;
   ghostView.theta = u.ghostTheta;
   ghostView.z = u.ghostZ;
@@ -508,6 +572,9 @@ function updatePace(): void {
     hud.popup('OVERTAKE!', 'overtake');
     hud.flash('#5dff8a', 0.22);
     sfx.overtake();
+    // +50 style (events go through the normal handler)
+    const ev = awardOvertake(state);
+    for (let i = 0; i < ev.length; i++) handleEvent(ev[i]);
   }
   if (u.newRecord) {
     hud.popup('NEW RECORD!', 'record');
@@ -524,7 +591,11 @@ function simStep(): void {
   simInput.overdrive = overdriveQueued;
   overdriveQueued = false;
   const events = step(state, simInput, SIM_DT);
-  for (let i = 0; i < events.length; i++) handleEvent(events[i]);
+  for (let i = 0; i < events.length; i++) {
+    // a pay-out that jumps over several powers of ten announces only the highest one
+    if (events[i].type === 'scoreMilestone' && events.slice(i + 1).some((x) => x.type === 'scoreMilestone')) continue;
+    handleEvent(events[i]);
+  }
 }
 
 let last = performance.now();
@@ -618,12 +689,21 @@ function frame(now: number): void {
   }
 }
 
-window.addEventListener('resize', () => renderer.resize());
+window.addEventListener('resize', () => {
+  renderer.resize();
+  hud.fitPopups();
+});
 window.addEventListener('orientationchange', () => {
   renderer.resize();
   // iOS reports the new size a moment after the event
-  window.setTimeout(() => renderer.resize(), 120);
-  window.setTimeout(() => renderer.resize(), 400);
+  window.setTimeout(() => {
+    renderer.resize();
+    hud.fitPopups();
+  }, 120);
+  window.setTimeout(() => {
+    renderer.resize();
+    hud.fitPopups();
+  }, 400);
 });
 window.visualViewport?.addEventListener('resize', () => renderer.resize());
 // Auto-pause ONLY when the page is really hidden (app switch, tab switch, screen lock). window 'blur' is NOT used:
@@ -694,6 +774,17 @@ window.__NEARMISS__ = {
       qualityTier: quality.tier,
       fps: Math.round(quality.fps * 10) / 10,
       fullscreen: !!document.fullscreenElement,
+      style: state.style.value,
+      rank: state.style.rank,
+      maxRank: state.style.maxRank,
+      zone: state.zone.active,
+      zoneLv: state.zone.lv,
+      zoneBank: state.zone.bank,
+      zoneLost: state.zone.lost,
+      zoneT: state.zone.t,
+      scoreExact: state.score,
+      insaneChain: state.insaneChain,
+      hudFxAlive: hud.fx.alive,
     };
   },
   forceDeath() {
@@ -762,7 +853,32 @@ window.__NEARMISS__ = {
       canvasW: canvas.width,
       canvasH: canvas.height,
       quality: { ...renderer.quality },
+      zoneAmount: renderer.zoneAmount,
     };
+  },
+  setStyle(n: number) {
+    if (screen !== 'playing' || !state.alive) return;
+    const ev = setStyle(state, n);
+    for (let i = 0; i < ev.length; i++) handleEvent(ev[i]);
+  },
+  forceZone() {
+    if (screen !== 'playing' || !state.alive) return;
+    const ev = forceZone(state);
+    for (let i = 0; i < ev.length; i++) handleEvent(ev[i]);
+  },
+  setCombo(n: number) {
+    state.combo = n;
+    state.multiplier = multiplierFor(n);
+    state.comboTimer = 3;
+  },
+  expireCombo() {
+    state.comboTimer = 0.001;
+  },
+  addBank(n: number) {
+    if (state.zone.active) state.zone.bank += n;
+  },
+  setScore(n: number) {
+    state.score = n;
   },
   setQualityTier(n: number) {
     quality.tier = Math.max(0, Math.min(6, Math.floor(n)));
@@ -773,6 +889,9 @@ window.__NEARMISS__ = {
     music.start(6);
     music.setOverdrive(true);
     music.setNitro(true);
+    // the ZONE layers (lead hook, vocal chops, shimmer, hard sidechain) are part of the worst case
+    music.setRank(6);
+    music.zoneEnter();
     sfx.startWind();
     sfx.updateWind(1, true, true);
     let worstGr = 0;
@@ -795,6 +914,11 @@ window.__NEARMISS__ = {
       if (k % 7 === 0) sfx.shieldBreak();
       if (k % 9 === 0) sfx.overdriveStart();
       if (k % 11 === 0) sfx.boom();
+      if (k % 6 === 0) sfx.zoneLevel(k % 9);
+      if (k % 13 === 0) sfx.rankUp(6);
+      if (k % 17 === 0) sfx.zoneClear();
+      if (k % 19 === 0) sfx.zoneBreak();
+      if (k % 23 === 0) sfx.milestone(9);
     }, 180);
     await new Promise((r) => window.setTimeout(r, seconds * 1000));
     window.clearInterval(burst);

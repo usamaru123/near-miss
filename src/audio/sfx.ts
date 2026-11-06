@@ -37,7 +37,7 @@ export class Sfx {
       envelope: { attack: 0.003, decay: 0.16, sustain: 0, release: 0.08 },
       volume: -11,
     });
-    this.pluck.maxPolyphony = 24;
+    this.pluck.maxPolyphony = 40;
     this.pluck.connect(a.sfx);
     const sendP = new Tone.Gain(0.35);
     this.pluck.connect(sendP);
@@ -49,7 +49,7 @@ export class Sfx {
       modulationEnvelope: { attack: 0.003, decay: 0.3, sustain: 0, release: 0.2 },
       volume: -18,
     });
-    this.bell.maxPolyphony = 20;
+    this.bell.maxPolyphony = 32;
     this.bell.connect(a.sfx);
     const sendB = new Tone.Gain(0.5);
     this.bell.connect(sendB);
@@ -499,7 +499,148 @@ export class Sfx {
     a.osc({ type: 'square', f0: high ? 1320 : 660, f1: high ? 1760 : 990, dur: 0.09, peak: 0.12, dest: a.ui });
   }
 
+  // ------------------------------------------------------------------ style rank + ZONE (DESIGN 18.3)
+
+  /** Rank-up: a rising run whose pitch climbs with the rank; S and above add a chord stinger. */
+  private _rankUp(rank: number): void {
+    if (!this.ok) return;
+    const a = this.a;
+    const t = a.now;
+    const n = 2 + Math.ceil(rank / 2); // 3..5 notes: PolySynth voices are a shared, capped resource
+    for (let i = 0; i < n; i++) {
+      const semi = rank * 2 + PENTA[i % PENTA.length] + (i >= PENTA.length ? 12 : 0);
+      this.pluck.triggerAttackRelease(a5(semi - 12), 0.1, t + i * 0.042, 0.8);
+    }
+    a.osc({ time: t, type: 'sine', f0: 500 + rank * 90, f1: 1500 + rank * 260, dur: 0.22, peak: 0.1, attack: 0.02, send: 0.3 });
+    a.noise({ time: t, dur: 0.25, type: 'bandpass', f0: 1500, f1: 7000 + rank * 600, q: 1.5, peak: 0.1, attack: 0.1, send: 0.25 });
+    if (rank >= 4) {
+      // chord stinger: S = triad, SS adds the 9th, SSS the octave on top and a glass chime
+      const h = t + n * 0.042 + 0.02;
+      const chord = rank >= 5 ? [0, 4, 7, 12] : [0, 4, 7];
+      chord.forEach((semi) => this.bell.triggerAttackRelease(a5(semi + rank), 0.9, h, 0.55));
+      this.pluck.triggerAttackRelease(a5(rank + 12), 0.2, h, 0.6);
+      a.play('crashBig', { time: h, db: -4 + rank, send: 0.3, dur: 1.0, fade: 0.4 });
+      if (rank >= 6) a.play('glassChime', { time: h + 0.05, db: 2, rate: 1.5, send: 0.4 });
+    }
+  }
+
+  /** Rank-down: three falling notes and a dull thud. */
+  private _rankDown(): void {
+    if (!this.ok) return;
+    const a = this.a;
+    const t = a.now;
+    [12, 7, 0].forEach((semi, i) => this.pluck.triggerAttackRelease(a5(semi - 12), 0.14, t + i * 0.07, 0.8));
+    a.osc({ time: t, type: 'triangle', f0: 700, f1: 160, dur: 0.4, peak: 0.16, attack: 0.01, send: 0.2 });
+    a.noise({ time: t, dur: 0.3, type: 'lowpass', f0: 3000, f1: 200, q: 1, peak: 0.16, attack: 0.005 });
+  }
+
+  /** ZONE entry: a reversed swell into the drop (the music adds its own riser), then a huge hit and a bright chord. */
+  private _zoneEnter(): void {
+    if (!this.ok) return;
+    const a = this.a;
+    const t = a.now;
+    a.play('crash', { time: t, db: 1, reverse: true, offset: 1.4, dur: 0.6, fade: 0.05, send: 0.3 });
+    a.osc({ time: t, type: 'sawtooth', f0: 220, f1: 1760, dur: 0.6, peak: 0.07, attack: 0.5, send: 0.3 });
+    const h = t + 0.6;
+    a.play('kickHeavy', { time: h, db: 0 });
+    a.play('crashBig', { time: h, db: 2, send: 0.35, dur: 1.4, fade: 0.5 });
+    a.play('subDrop', { time: h, db: -2, dur: 0.9, fade: 0.3 });
+    a.noise({ time: h, dur: 0.6, type: 'bandpass', f0: 600, f1: 9000, q: 1, peak: 0.2, attack: 0.01, send: 0.3 });
+    [0, 7, 12, 19].forEach((semi, i) => {
+      this.bell.triggerAttackRelease(a5(semi), 1.0, h + 0.02, 0.5);
+      this.pluck.triggerAttackRelease(a5(semi), 0.14, h + i * 0.05, 0.7);
+    });
+    a.play('glassChime', { time: h + 0.1, db: 3, rate: 1.2, send: 0.4 });
+  }
+
+  /** ZONE level-up stinger. */
+  private _zoneLevel(lv: number): void {
+    if (!this.ok) return;
+    const a = this.a;
+    const t = a.now;
+    const base = Math.min(12, lv * 2);
+    [0, 4, 7, 12].forEach((semi, i) => {
+      this.pluck.triggerAttackRelease(a5(semi + base), 0.1, t + i * 0.05, 0.8);
+      if (i % 2 === 0) this.bell.triggerAttackRelease(a5(semi + base + 12), 0.45, t + i * 0.05, 0.5);
+    });
+    a.play('coin', { time: t + 0.15, db: 2, rate: 1 + lv * 0.04, send: 0.3 });
+    a.noise({ time: t, dur: 0.35, type: 'highpass', f0: 6000, q: 0.5, peak: 0.1, attack: 0.1, send: 0.3 });
+  }
+
+  /** ZONE CLEAR: a counting arpeggio, coin and chime. */
+  private _zoneClear(): void {
+    if (!this.ok) return;
+    const a = this.a;
+    const t = a.now;
+    for (let i = 0; i < 9; i++) {
+      const f = a5(PENTA[i % PENTA.length] + (i >= 6 ? 24 : i >= 3 ? 12 : 0) - 12);
+      this.pluck.triggerAttackRelease(f, 0.08, t + i * 0.07, 0.7);
+      if (i % 4 === 0) this.bell.triggerAttackRelease(f * 2, 0.5, t + i * 0.07, 0.45);
+    }
+    a.play('coin', { time: t, db: 3, rate: 0.95, send: 0.3 });
+    a.play('coin', { time: t + 0.33, db: 3, rate: 1.2, send: 0.3 });
+    a.play('glassChime', { time: t + 0.7, db: 3, rate: 1.4, send: 0.4 });
+    a.noise({ time: t + 0.1, dur: 0.8, type: 'highpass', f0: 6500, q: 0.5, peak: 0.1, attack: 0.3, send: 0.3 });
+  }
+
+  /** ZONE BREAK: record-scratch swipes, glass and a low thud. */
+  private _zoneBreak(): void {
+    if (!this.ok) return;
+    const a = this.a;
+    const t = a.now;
+    for (let i = 0; i < 4; i++) {
+      const up = i % 2 === 0;
+      a.osc({ time: t + i * 0.075, type: 'sawtooth', f0: up ? 260 : 1300, f1: up ? 1300 : 260, dur: 0.07, peak: 0.12, attack: 0.004, pan: up ? -0.3 : 0.3 });
+      a.noise({ time: t + i * 0.075, dur: 0.07, type: 'bandpass', f0: up ? 900 : 4200, f1: up ? 4200 : 900, q: 3, peak: 0.28, attack: 0.004, pan: up ? -0.3 : 0.3 });
+    }
+    const h = t + 0.3;
+    a.play('glass', { time: h, db: 3, rate: 0.8, send: 0.3 });
+    a.osc({ time: h, type: 'sine', f0: 150, f1: 40, dur: 0.35, peak: 0.4, attack: 0.003 });
+    a.osc({ time: h, type: 'sawtooth', f0: 900, f1: 90, dur: 0.6, peak: 0.1, attack: 0.004, send: 0.2 });
+  }
+
+  /** 10^n score milestone: a rising sweep and a bright chord that climbs with n. */
+  private _milestone(exp: number): void {
+    if (!this.ok) return;
+    const a = this.a;
+    const t = a.now;
+    const up = Math.min(14, (exp - 4) * 2);
+    a.osc({ time: t, type: 'sine', f0: 400, f1: 1800, dur: 0.4, peak: 0.1, attack: 0.1, send: 0.3 });
+    [0, 4, 7, 12].forEach((semi) => this.bell.triggerAttackRelease(a5(semi + up), 0.8, t + 0.3, 0.55));
+    this.pluck.triggerAttackRelease(a5(up + 12), 0.2, t + 0.3, 0.7);
+    a.play('coin', { time: t + 0.3, db: 1, rate: 0.9 + exp * 0.02, send: 0.3 });
+  }
+
   // ---- level-trimmed entry points ----
+
+  rankUp(rank: number): void {
+    this.scoped(0.62, () => this._rankUp(rank));
+  }
+
+  rankDown(): void {
+    this.scoped(0.6, () => this._rankDown());
+  }
+
+  zoneEnter(): void {
+    this.scoped(0.5, () => this._zoneEnter());
+  }
+
+  zoneLevel(lv: number): void {
+    this.scoped(0.6, () => this._zoneLevel(lv));
+  }
+
+  zoneClear(): void {
+    this.scoped(0.6, () => this._zoneClear());
+  }
+
+  zoneBreak(): void {
+    this.scoped(0.55, () => this._zoneBreak());
+  }
+
+  milestone(exp: number): void {
+    this.scoped(0.6, () => this._milestone(exp));
+  }
+
 
   nearMiss(dist = NEAR_DIST * 0.5, pan = 0): void {
     this.scoped(0.6, () => this._nearMiss(dist, pan));

@@ -74,7 +74,7 @@ export interface PowerUp {
 
 export type GameEvent =
   | { type: 'nearMiss'; points: number; mult: number; combo: number; theta: number; dist: number; pan: number; onBeat: boolean; streak: number }
-  | { type: 'insane'; points: number; mult: number; combo: number; theta: number; dist: number; pan: number; onBeat: boolean; streak: number }
+  | { type: 'insane'; points: number; mult: number; combo: number; theta: number; dist: number; pan: number; onBeat: boolean; streak: number; chain: number }
   | { type: 'beatStreak'; streak: number; points: number }
   | { type: 'clutchStart'; theta: number; dir: number }
   | { type: 'clutchSuccess'; points: number; theta: number }
@@ -94,7 +94,15 @@ export type GameEvent =
   | { type: 'effectEnd'; kind: ItemKind }
   | { type: 'shieldBreak'; theta: number; id: number }
   | { type: 'emp'; count: number; points: number }
-  | { type: 'multUp'; mult: number };
+  | { type: 'multUp'; mult: number }
+  | { type: 'rankUp'; rank: number; from: number }
+  | { type: 'rankDown'; rank: number; from: number }
+  | { type: 'zoneEnter' }
+  | { type: 'zoneLevel'; lv: number }
+  | { type: 'zoneClear'; bank: number }
+  | { type: 'zoneBreak'; bank: number; paid: number }
+  | { type: 'zoneLost'; bank: number }
+  | { type: 'scoreMilestone'; exp: number };
 
 export interface SpawnerState {
   rng: Rng;
@@ -128,6 +136,34 @@ export interface ClutchState {
   obs: Obstacle | null;
   /** Real-time clock value of the last CLUTCH start. */
   lastStart: number;
+}
+
+/** Style rank meter (section 18.1). */
+export interface StyleState {
+  value: number;
+  /** held rank, 0 (D) .. 6 (SSS) */
+  rank: number;
+  maxRank: number;
+  /** seconds the value has been under the held rank's threshold */
+  downT: number;
+  /** continuous seconds at SSS (outside a ZONE) */
+  sssT: number;
+}
+
+/** ZONE state (section 18.2). While active, every point earned goes to the BANK instead of the score. */
+export interface ZoneState {
+  active: boolean;
+  /** sim seconds since entry */
+  t: number;
+  lv: number;
+  maxLv: number;
+  bank: number;
+  /** last beat index the BANK compounded on */
+  beat: number;
+  /** BANK forfeited by the last death (game-over screen) */
+  lost: number;
+  /** ZONEs entered this run */
+  entries: number;
 }
 
 export interface GameState {
@@ -175,6 +211,14 @@ export interface GameState {
   /** Reduced-flash mode halves hit-stop. */
   reducedFlash: boolean;
   clutch: ClutchState;
+  style: StyleState;
+  zone: ZoneState;
+  /** Real seconds left of the ZONE-entry slow-motion dip (0 = none). */
+  zoneChargeT: number;
+  /** consecutive INSANEs (the INSANE bonus doubles with each one) */
+  insaneChain: number;
+  /** highest 10^n the score has been announced for */
+  milestoneExp: number;
   tier: number;
   maxTier: number;
   alive: boolean;

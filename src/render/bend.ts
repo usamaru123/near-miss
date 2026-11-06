@@ -4,6 +4,9 @@ import * as THREE from 'three';
 export const bendUniforms = {
   uBendTime: { value: 0 },
   uBendAmp: { value: 1 },
+  /** ZONE palette blend 0..1 and the hue offset of the flowing rainbow (tunnel materials only) */
+  uZone: { value: 0 },
+  uZoneHue: { value: 0 },
 };
 
 const GLSL = /* glsl */ `
@@ -20,12 +23,33 @@ vec2 bendOffset(float z) {
 }
 `;
 
+const RAINBOW_FRAG_HEAD = /* glsl */ `
+uniform float uZone;
+uniform float uZoneHue;
+varying float vZoneZ;
+`;
+
 /** Patch a built-in material so its vertices bend with distance. Zero offset near the player. */
-export function applyBend<T extends THREE.Material>(mat: T): T {
+export function applyBend<T extends THREE.Material>(mat: T, rainbow = false): T {
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uBendTime = bendUniforms.uBendTime;
     shader.uniforms.uBendAmp = bendUniforms.uBendAmp;
-    shader.vertexShader = GLSL + shader.vertexShader.replace(
+    if (rainbow) {
+      shader.uniforms.uZone = bendUniforms.uZone;
+      shader.uniforms.uZoneHue = bendUniforms.uZoneHue;
+      shader.fragmentShader = RAINBOW_FRAG_HEAD + shader.fragmentShader.replace(
+        '#include <color_fragment>',
+        /* glsl */ `
+        #include <color_fragment>
+        {
+          float zl = max(diffuseColor.r, max(diffuseColor.g, diffuseColor.b));
+          vec3 rb = 0.5 + 0.5 * cos(6.28318 * (vec3(0.0, 0.333, 0.667) + vZoneZ * 0.03 + uZoneHue));
+          diffuseColor.rgb = mix(diffuseColor.rgb, rb * zl, uZone);
+        }
+        `,
+      );
+    }
+    shader.vertexShader = (rainbow ? 'varying float vZoneZ;\n' : '') + GLSL + shader.vertexShader.replace(
       '#include <project_vertex>',
       /* glsl */ `
       vec4 mvPosition = vec4( transformed, 1.0 );
@@ -34,11 +58,12 @@ export function applyBend<T extends THREE.Material>(mat: T): T {
       #endif
       vec4 bendWp = modelMatrix * mvPosition;
       bendWp.xy += bendOffset(bendWp.z);
+      ${rainbow ? 'vZoneZ = bendWp.z;' : ''}
       mvPosition = viewMatrix * bendWp;
       gl_Position = projectionMatrix * mvPosition;
       `,
     );
   };
-  mat.customProgramCacheKey = () => 'bend';
+  mat.customProgramCacheKey = () => (rainbow ? 'bend-rainbow' : 'bend');
   return mat;
 }
