@@ -48,11 +48,11 @@ export class GhostShip {
     this.group.visible = false;
   }
 
-  update(visible: boolean, theta: number, z: number, angVel: number, dt: number): void {
+  update(visible: boolean, theta: number, z: number, angVel: number, dt: number, rs = 1): void {
     this.amt += ((visible ? 1 : 0) - this.amt) * (1 - Math.exp(-dt * 8));
     this.group.visible = this.amt > 0.02;
     if (!this.group.visible) return;
-    this.group.position.set(Math.cos(theta) * SHIP_RADIUS, Math.sin(theta) * SHIP_RADIUS, z);
+    this.group.position.set(Math.cos(theta) * SHIP_RADIUS * rs, Math.sin(theta) * SHIP_RADIUS * rs, z);
     this.group.rotation.z = theta + Math.PI / 2 - angVel * 0.04;
     this.bodyMat.opacity = 0.25 * this.amt;
     this.trailMat.opacity = 0.045 * this.amt;
@@ -92,14 +92,14 @@ export class ClutchArrow {
   }
 
   /** `dir` is +1 / -1 along increasing theta, 0 = hide. */
-  update(active: boolean, dir: number, theta: number, dt: number): void {
+  update(active: boolean, dir: number, theta: number, dt: number, rs = 1): void {
     this.t += dt;
     const on = active && dir !== 0 && Math.floor(this.t * 12) % 2 === 0;
     this.group.visible = on;
     if (!on) return;
     // sit beside the ship along the wall, pointing in the escape direction
     const off = theta + dir * 0.34;
-    this.group.position.set(Math.cos(off) * (SHIP_RADIUS - 0.2), Math.sin(off) * (SHIP_RADIUS - 0.2), 0.4);
+    this.group.position.set(Math.cos(off) * (SHIP_RADIUS * rs - 0.2), Math.sin(off) * (SHIP_RADIUS * rs - 0.2), 0.4);
     const tx = -Math.sin(theta) * dir;
     const ty = Math.cos(theta) * dir;
     this.group.rotation.z = Math.atan2(ty, tx);

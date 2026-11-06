@@ -1,5 +1,7 @@
 import {
   BEAT_GRID,
+  BEATS_PER_BAR,
+  FIRST_SECTION_BEAT,
   BPM_AT_BASE,
   BPM_SLOPE_PER_SPEED,
   GAP_MIN_FRACTION,
@@ -32,6 +34,12 @@ export function distAt(t: number): number {
     0.5 * SPEED_GROWTH * SPEED_CAP_TIME * SPEED_CAP_TIME +
     SPEED_MAX * (t - SPEED_CAP_TIME)
   );
+}
+
+/** Start beat of the section chapter that belongs to tier k (bar-snapped down from the tier-up, so a GAUNTLET can end just before it). */
+export function chapterStartBeat(k: number): number {
+  if (k <= 1) return FIRST_SECTION_BEAT;
+  return Math.floor(beatAt(TIER_DURATION * (k - 1)) / BEATS_PER_BAR) * BEATS_PER_BAR;
 }
 
 export function tierAt(t: number): number {
@@ -99,11 +107,11 @@ export function isOnBeat(offsetSec: number): boolean {
  * Next grid beat after `beat0` for a design gap of `gapSec`: nearest 0.5-beat multiple, at least one
  * grid step, and never shorter than 0.9 x the design gap in real time.
  */
-export function quantizeGapBeat(beat0: number, gapSec: number): number {
+export function quantizeGapBeat(beat0: number, gapSec: number, step = BEAT_GRID): number {
   const t0 = timeAtBeat(beat0);
   const beats = (gapSec * bpmAt(t0)) / 60;
-  let nb = beat0 + Math.max(BEAT_GRID, Math.round(beats / BEAT_GRID) * BEAT_GRID);
-  while (timeAtBeat(nb) - t0 < GAP_MIN_FRACTION * gapSec - 1e-9) nb += BEAT_GRID;
+  let nb = beat0 + Math.max(step, Math.round(beats / step) * step);
+  while (timeAtBeat(nb) - t0 < GAP_MIN_FRACTION * gapSec - 1e-9) nb += step;
   return nb;
 }
 

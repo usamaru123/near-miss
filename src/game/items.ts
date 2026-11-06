@@ -3,7 +3,6 @@ import {
   CHAIN_EVERY_MAX,
   CHAIN_EVERY_MIN,
   DEG,
-  HIT_WINDOW,
   ITEM_KINDS,
   ITEM_WEIGHTS,
   POWERUP_CLEARANCE,
@@ -23,8 +22,8 @@ import type { ItemKind } from './constants';
 import { distAt, speedAt } from './difficulty';
 import type { Arc, Obstacle, Shard, SpawnerState } from './types';
 
-/** Items closer than this to an obstacle's Z are validated against its solids. */
-const Z_CHECK = HIT_WINDOW + 1.0;
+/** Items closer than this (beyond the obstacle's half length) to an obstacle's Z are validated against its solids. */
+const Z_MARGIN = 1.0;
 const MIN_ARC = 28 * DEG;
 const RECENT_KEEP = 8;
 
@@ -42,7 +41,7 @@ export function solidClearance(obstacles: readonly Obstacle[], pos: number, thet
   let m = Infinity;
   for (const o of obstacles) {
     const dz = pos - o.pos;
-    if (Math.abs(dz) > Z_CHECK) continue;
+    if (Math.abs(dz) > o.hw + Z_MARGIN) continue;
     const d = pointSetDistance(theta, solidsAt(o, dz));
     if (d < m) m = d;
   }
@@ -72,9 +71,9 @@ function insertSorted<T extends { pos: number }>(q: T[], item: T): void {
   q.splice(i, 0, item);
 }
 
-function makeChain(sp: SpawnerState, o: Obstacle): boolean {
+function makeChain(sp: SpawnerState, o: Obstacle, narrow = false, shift = 0): boolean {
   const rng = sp.itemRng;
-  const arc = pickSafeArc(sp, o);
+  const arc = narrow && o.narrow >= 0 ? o.safe[o.narrow] : pickSafeArc(sp, o);
   if (!arc) return false;
   const n = rng.int(SHARD_MIN_COUNT, SHARD_MAX_COUNT);
   const r = rng.next();
@@ -112,7 +111,7 @@ function makeChain(sp: SpawnerState, o: Obstacle): boolean {
   const chainId = sp.nextChainId++;
   const made: Shard[] = [];
   for (let k = 0; k < n; k++) {
-    const pos = distAt(o.tNom + (k - (n - 1) / 2) * SHARD_SPACING_TIME) + sp.dOff;
+    const pos = distAt(o.tNom + shift + (k - (n - 1) / 2) * SHARD_SPACING_TIME) + sp.dOff;
     // never inside a solid, with a visual margin
     if (solidClearance(sp.recent, pos, thetas[k]) < SHARD_CLEARANCE) return false;
     made.push({ id: 0, chainId, idx: k, chainLen: n, anchorId: o.id, pos, theta: thetas[k], z: 0, done: false });
@@ -156,7 +155,26 @@ export function updateItems(sp: SpawnerState): void {
   if (!sp.itemsEnabled) return;
   while (sp.itemCursor + 1 < sp.recent.length) {
     const o = sp.recent[sp.itemCursor++];
-    if (o.kind === 'SNAKE') continue;
+    if (o.kind === 'SNAKE' || o.kind === 'LASER') continue;
+    if (o.section === 'SPLIT' && o.narrow >= 0) {
+      // the greedy route: every SPLIT ring pays out a shard chain through its narrow gap (the wide gap carries none)
+      makeChain(sp, o, true);
+      if (o.tNom >= sp.nextPowerupT && makePowerup(sp, o)) {
+        sp.nextPowerupT = o.tNom + sp.itemRng.range(POWERUP_INTERVAL_MIN, POWERUP_INTERVAL_MAX);
+      }
+      continue;
+    }
+    if (o.section === 'BREATHER') {
+      // shard rain: a chain before, at and after every sparse obstacle (all inside the obstacle's own safe zone)
+      const lead = Math.min(0.45, o.dtPrev * 0.3);
+      makeChain(sp, o, false, -lead);
+      makeChain(sp, o, false, 0);
+      makeChain(sp, o, false, lead);
+      if (o.tNom >= sp.nextPowerupT && makePowerup(sp, o)) {
+        sp.nextPowerupT = o.tNom + sp.itemRng.range(POWERUP_INTERVAL_MIN, POWERUP_INTERVAL_MAX);
+      }
+      continue;
+    }
     if (sp.chainCountdown <= 0) {
       if (makeChain(sp, o)) sp.chainCountdown = sp.itemRng.int(CHAIN_EVERY_MIN, CHAIN_EVERY_MAX);
       else sp.chainCountdown = 1;

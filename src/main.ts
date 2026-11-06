@@ -14,11 +14,14 @@ import {
   REDUCED_FLASH_FACTOR,
   SIM_DT,
   SPEED_BASE,
+  SECTION_NAMES,
   SPEED_MAX,
   START_THETA,
+  BIOMES,
   TIERS,
 } from './game/constants';
-import { createState, forceClutch, forceDeath, multiplierFor, spawnItemAhead, step } from './game/sim';
+import type { SectionName } from './game/constants';
+import { createState, forceClutch, forceDeath, forceSection, multiplierFor, spawnItemAhead, step } from './game/sim';
 import { formatScore } from './game/format';
 import { awardOvertake, forceZone, setStyle } from './game/style';
 import { PaceTracker, parseTrace, resultVsBest, serializeTrace } from './game/pace';
@@ -63,9 +66,17 @@ interface NearMissDebug {
   setStyle(n: number): void;
   /** Open a ZONE right now (SSS, as if the 3 s had been held). */
   forceZone(): void;
+  /** Show biome `n` (0..5) instead of the tier's; -1 follows the tier again. Visual only: the sim is untouched. */
+  setBiome(n: number): void;
+  /** Fire the biome-change effects (banner, white-out / fade, jingle) for biome `n` as if the warp gate had just been passed. */
+  warpTo(n: number): void;
+  /** Make the next section of the course `name` (see SECTION_NAMES); cuts the track further than ~45 units ahead. */
+  forceSection(name: string): void;
   /** Set the combo (and its multiplier) and keep it alive; `expireCombo()` lets it break on the next step. */
   setCombo(n: number): void;
   expireCombo(): void;
+  /** Keep the combo alive (its 3 s timer pinned) until expireCombo() / the next run: e2e steps that wait longer than the timer. */
+  holdCombo(on: boolean): void;
   /** Add `n` points to the running ZONE BANK (e2e: makes CLEAR / BREAK / LOST show big numbers). */
   addBank(n: number): void;
   /** Force the next score through the sim as if it were `n` (e2e: milestones / formatting). */
@@ -81,6 +92,21 @@ const LS_BEST = 'nearmiss.best';
 const LS_FLASH = 'nearmiss.reducedFlash';
 const LS_VOL = 'nearmiss.vol.';
 const LS_GHOST = 'nearmiss.ghost';
+
+/** Banner text for the start of each section (RANDOM is the plain course: no banner). */
+const SECTION_BANNER: Partial<Record<SectionName, { text: string; color: string }>> = {
+  SPIRAL: { text: 'SPIRAL', color: '#7df9ff' },
+  ZIGZAG: { text: 'ZIGZAG', color: '#7df9ff' },
+  PULSE: { text: 'PULSE // ON THE BEAT', color: '#ff7df0' },
+  LASER: { text: 'LASER GRID', color: '#ff4a5a' },
+  SPLIT: { text: 'SPLIT // GREEDY ROUTE', color: '#ffe066' },
+  DARK: { text: 'DARK // LIGHTS OUT', color: '#b8b8ff' },
+  FLIP: { text: 'FLIP!', color: '#ffb84a' },
+  BREATHER: { text: 'BREATHER // COLLECT!', color: '#7dffb0' },
+  GAUNTLET: { text: 'GAUNTLET!', color: '#ff4a5a' },
+};
+/** Sections that announce themselves one bar early. */
+const SECTION_NOTICE: Partial<Record<SectionName, string>> = { FLIP: 'FLIP INCOMING', GAUNTLET: 'GAUNTLET AHEAD', DARK: 'LIGHTS OUT' };
 
 const ITEM_LABEL: Record<ItemKind, { text: string; color: string }> = {
   SHIELD: { text: 'SHIELD!', color: '#4a9bff' },
@@ -134,6 +160,8 @@ let pausedAt = 0;
 let wantFullscreen = false;
 /** debug: keep the adrenaline gauge full until OVERDRIVE starts (the natural full window is only a few frames) */
 let holdAdrenaline = false;
+/** debug: pin the combo timer so slow (software GL) e2e steps cannot break the combo behind the test's back */
+let holdComboOn = false;
 
 let screen: Screen = 'title';
 let state: GameState = makeTitleState();
@@ -237,7 +265,11 @@ function resetRunState(seed: number): void {
   simDen = 0;
   overdriveQueued = false;
   milestonesHit = 0;
+  holdComboOn = false;
+  renderer.biomeOverride = -1;
   renderer.reset(state);
+  music.setBiome(0);
+  music.setSection('RANDOM', 0.4, 8, 0, 0);
   hud.resetSpeed(0);
   hud.clearStreaks();
   void audio.unlock();
@@ -387,11 +419,17 @@ function applyMuffle(): void {
   audio.setFocus(state.focusActive || state.clutch.active);
 }
 
+/** Where the floaters go: under the ship - and when FLIP has put the ship at the top, where it would be upright (never into the no-go circle). */
+function shipFloaterPos(): void {
+  renderer.shipScreen(shipPos);
+  if (renderer.rig.flipRoll > Math.PI / 2) shipPos.y = window.innerHeight - shipPos.y;
+}
+
 function handleEvent(e: GameEvent): void {
   switch (e.type) {
     case 'nearMiss':
       sfx.nearMiss(e.dist, e.pan);
-      renderer.shipScreen(shipPos);
+      shipFloaterPos();
       hud.floater('NEAR MISS +' + formatScore(e.points) + (e.onBeat ? ' \u00b7 ON BEAT' : ''), shipPos.x, shipPos.y + 34, e.onBeat ? 'insane' : 'near', e.points);
       hud.popScore();
       hud.flash(e.onBeat ? '#7df9ff' : '#ffffff', e.onBeat ? 0.12 : 0.08);
@@ -399,7 +437,7 @@ function handleEvent(e: GameEvent): void {
       break;
     case 'insane':
       sfx.insane(e.dist, e.pan);
-      renderer.shipScreen(shipPos);
+      shipFloaterPos();
       hud.floater(
         (e.chain > 1 ? 'INSANE \u00d7' + e.chain + ' CHAIN!! +' : 'INSANE!! +') + formatScore(e.points) + (e.onBeat ? ' \u00b7 ON BEAT' : ''),
         shipPos.x,
@@ -434,7 +472,7 @@ function handleEvent(e: GameEvent): void {
       break;
     case 'smash':
       sfx.smash();
-      renderer.shipScreen(shipPos);
+      shipFloaterPos();
       hud.floater('SMASH +' + formatScore(e.points), shipPos.x, shipPos.y + 34, 'smash', e.points);
       hud.popScore();
       hud.flash('#ff6070', 0.18);
@@ -490,6 +528,34 @@ function handleEvent(e: GameEvent): void {
       music.tierUp(e.tier);
       hud.tierBanner(e.tier);
       hud.flash('#ffffff', 0.18);
+      break;
+    case 'biomeChange': {
+      haptic(30);
+      const t = TIERS[e.biome];
+      sfx.warp();
+      music.setBiome(e.biome);
+      hud.warpFlash(reducedFlash);
+      hud.biomeBanner(BIOMES[e.biome].name, t.rainbow ? '#ffffff' : '#' + t.primary.toString(16).padStart(6, '0'));
+      break;
+    }
+    case 'sectionNotice': {
+      music.sectionNotice(e.name, e.inBeats);
+      const text = SECTION_NOTICE[e.name];
+      if (text) hud.sectionBanner(text, 'notice');
+      break;
+    }
+    case 'sectionStart': {
+      music.setSection(e.name, e.intensity, e.bars, e.startBeat, e.idx);
+      const b = SECTION_BANNER[e.name];
+      if (b) hud.sectionBanner(b.text, 'section', b.color);
+      if (e.name === 'FLIP') sfx.flip();
+      break;
+    }
+    case 'gauntletClear':
+      haptic(30);
+      sfx.gauntletClear();
+      hud.gauntletClear(e.points);
+      hud.flash('#ffe9a8', 0.3);
       break;
     case 'overdriveStart':
       holdAdrenaline = false;
@@ -586,7 +652,9 @@ function updatePace(): void {
 
 function simStep(): void {
   if (holdAdrenaline) state.adrenaline = 1;
-  simInput.move = input.move;
+  if (holdComboOn && state.combo > 0 && state.comboTimer < 1.5) state.comboTimer = 1.5;
+  // FLIP: the camera is upside down, so the screen-relative input is mirrored into the world (left is always screen-left)
+  simInput.move = input.move * renderer.rig.inputSign;
   simInput.focus = input.focus;
   simInput.overdrive = overdriveQueued;
   overdriveQueued = false;
@@ -785,6 +853,13 @@ window.__NEARMISS__ = {
       scoreExact: state.score,
       insaneChain: state.insaneChain,
       hudFxAlive: hud.fx.alive,
+      section: state.section.name,
+      sectionIdx: state.section.idx,
+      kinds: [...new Set(state.obstacles.map((o) => o.kind + '/' + o.section))],
+      sectionRole: state.section.role,
+      sectionIntensity: state.section.intensity,
+      gauntlets: state.section.gauntlets,
+      biome: state.tier - 1,
     };
   },
   forceDeath() {
@@ -810,7 +885,7 @@ window.__NEARMISS__ = {
     hud.popup('CLUTCH!! +3000', 'clutch');
     hud.popup('NEW RECORD!', 'record');
     hud.milestone('1000 km/h!!');
-    renderer.shipScreen(shipPos);
+    shipFloaterPos();
     hud.floater('NEAR MISS +500', shipPos.x, shipPos.y + 34, 'near');
     hud.floater('INSANE!! +1500', shipPos.x, shipPos.y + 34, 'insane');
     renderer.milestone();
@@ -854,6 +929,8 @@ window.__NEARMISS__ = {
       canvasH: canvas.height,
       quality: { ...renderer.quality },
       zoneAmount: renderer.zoneAmount,
+      ...renderer.biomeInfo,
+      inputSign: renderer.rig.inputSign,
     };
   },
   setStyle(n: number) {
@@ -872,7 +949,24 @@ window.__NEARMISS__ = {
     state.comboTimer = 3;
   },
   expireCombo() {
+    holdComboOn = false;
     state.comboTimer = 0.001;
+  },
+  holdCombo(on: boolean) {
+    holdComboOn = on;
+  },
+  warpTo(n: number) {
+    const b = Math.max(0, Math.min(BIOMES.length - 1, Math.floor(n)));
+    renderer.biomeOverride = b;
+    handleEvent({ type: 'biomeChange', biome: b });
+  },
+  setBiome(n: number) {
+    renderer.biomeOverride = n < 0 ? -1 : Math.min(BIOMES.length - 1, Math.floor(n));
+    if (n >= 0) music.setBiome(renderer.biomeOverride);
+  },
+  forceSection(name: string) {
+    if (screen !== 'playing' || !state.alive || !(SECTION_NAMES as readonly string[]).includes(name)) return;
+    forceSection(state, name as SectionName);
   },
   addBank(n: number) {
     if (state.zone.active) state.zone.bank += n;
@@ -919,6 +1013,11 @@ window.__NEARMISS__ = {
       if (k % 17 === 0) sfx.zoneClear();
       if (k % 19 === 0) sfx.zoneBreak();
       if (k % 23 === 0) sfx.milestone(9);
+      // the course effects (DESIGN 20) are part of the worst case too
+      if (k % 5 === 0) sfx.warp();
+      if (k % 7 === 2) sfx.flip();
+      if (k % 8 === 3) sfx.gauntletClear();
+      if (k % 9 === 0) music.setSection(SECTION_NAMES[k % SECTION_NAMES.length], 0.9, 4, 4 * k, k);
     }, 180);
     await new Promise((r) => window.setTimeout(r, seconds * 1000));
     window.clearInterval(burst);

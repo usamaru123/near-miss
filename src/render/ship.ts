@@ -73,8 +73,9 @@ export class Ship {
     this.group.add(body, edges, glow, this.flameOuter, this.flameInner);
   }
 
-  update(theta: number, angVel: number, dt: number, color: THREE.Color, hot: boolean, speedFrac: number, overdrive: boolean): void {
-    this.group.position.set(Math.cos(theta) * SHIP_RADIUS, Math.sin(theta) * SHIP_RADIUS, 0);
+  /** `rs`: the cross-section's radius at the ship's angle relative to the round tunnel (visual only, 1 = round). */
+  update(theta: number, angVel: number, dt: number, color: THREE.Color, hot: boolean, speedFrac: number, overdrive: boolean, rs = 1): void {
+    this.group.position.set(Math.cos(theta) * SHIP_RADIUS * rs, Math.sin(theta) * SHIP_RADIUS * rs, 0);
     this.bank += (-(angVel / MAX_ANG_VEL) * 0.5 - this.bank) * (1 - Math.exp(-dt * 12));
     this.group.rotation.z = theta + Math.PI / 2 + this.bank;
     this.bodyMat.color.set(hot ? 0xffffff : 0xdff8ff).multiplyScalar(1.4);

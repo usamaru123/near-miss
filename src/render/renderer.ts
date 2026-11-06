@@ -1,21 +1,25 @@
 import * as THREE from 'three';
 import {
   FOG_FAR,
+  MAX_TIER,
   SHAKE,
   SHIP_RADIUS,
   SPEED_BASE,
   SPEED_MAX,
   TIERS,
+  TIER_DURATION,
+  WARP_LEAD,
 } from '../game/constants';
 import type { GameEvent, GameState } from '../game/types';
 import { bendUniforms } from './bend';
+import { BiomeParticles, WarpGate } from './biomefx';
+import { BIOME_PALETTES, DARK_BG, DARK_EDGE_MIX, SHAPE_OF, createXs, fillXs, xsRadius } from './biome';
 import { ClutchArrow, GhostShip, TimingRing } from './beatfx';
 import { CameraRig } from './cameraRig';
 import { PickupRings, ShieldBubble, shockRadius } from './fx';
 import { ITEM_COLORS, ItemView } from './items';
 import {
   NORMAL_BG,
-  NORMAL_EDGE_GAIN,
   RANK_COLORS,
   ZONE_BG,
   ZONE_EDGE_GAIN,
@@ -25,12 +29,14 @@ import {
   zoneFadeStep,
 } from './palette';
 import { ObstacleView } from './obstacles';
+import type { ObstacleLook } from './obstacles';
 import { Debris, SpeedLines } from './particles';
 import { PostFx } from './post';
 import { settingsFor } from './quality';
 import type { QualitySettings } from './quality';
 import { Ship } from './ship';
 import { Tunnel } from './tunnel';
+import type { TunnelVis } from './tunnel';
 import { Afterimages, RibbonField } from './zonefx';
 
 export interface ViewState {
@@ -81,7 +87,7 @@ export class GameRenderer {
   private blurKick = 0;
   private readonly blurProj = new THREE.Vector3(0, 0, -60);
   /** adaptive quality (DESIGN 17.6) */
-  readonly quality: QualitySettings = settingsFor(0, { tier: 0, dprCap: 2, bloomHalf: false, blurTaps: 10, particleScale: 1, ribbonScale: 1, afterimages: 3, grainScale: 1 });
+  readonly quality: QualitySettings = settingsFor(0, { tier: 0, dprCap: 2, bloomHalf: false, blurTaps: 10, particleScale: 1, ribbonScale: 1, afterimages: 3, grainScale: 1, biomeParticles: 1, patterns: true, gateGhost: true });
   // ---- style rank + ZONE (DESIGN 18.3) ----
   private readonly ribbons = new RibbonField();
   private readonly after = new Afterimages();
@@ -95,6 +101,24 @@ export class GameRenderer {
   private readonly zoneFill = new THREE.Color(ZONE_OBSTACLE_FILL);
   private readonly rgbTmp = [0, 0, 0];
   private readonly bg = new THREE.Color(NORMAL_BG);
+  // ---- biomes + sections (DESIGN 20) ----
+  private readonly gate = new WarpGate();
+  private readonly biomeFx = new BiomeParticles();
+  private biomeCur = 0;
+  private biomeFrom = 0;
+  private biomeBlend = 1;
+  /** debug: show this biome instead of the tier's (-1 = follow the tier) */
+  biomeOverride = -1;
+  private readonly xsFrom = createXs();
+  private readonly xsTo = createXs();
+  private readonly tunnelVis: TunnelVis = { ring: 1, long: 1, lamp: 1, shell: new THREE.Color(0x05050f) };
+  private readonly tmpA = new THREE.Color();
+  private readonly tmpB = new THREE.Color();
+  private readonly obsLook: ObstacleLook = { edge: new THREE.Color(), darkEdge: new THREE.Color(), fill: new THREE.Color(), edgeGain: 1.7, fillMul: 1, beat: 0, zone: 0 };
+  private readonly black = new THREE.Color(DARK_BG);
+  private darkAmt = 0;
+  /** cross-section radius at the ship's angle (1 = round); the ship and its helpers ride on it */
+  private shipRs = 1;
   private readonly box = new THREE.Box3();
   private readonly corner = new THREE.Vector3();
 
@@ -127,7 +151,7 @@ export class GameRenderer {
     this.rig.camera.add(this.shock);
     this.scene.add(this.rig.camera);
     this.ship.group.add(this.bubble.group);
-    this.scene.add(this.tunnel.group, this.obstacles.group, this.items.group, this.ship.group, this.lines.object, this.debris.mesh, this.rings.group, this.ghost.group, this.clutchArrow.group, this.timingRing.mesh, this.ribbons.mesh, this.after.group);
+    this.scene.add(this.tunnel.group, this.obstacles.group, this.items.group, this.ship.group, this.lines.object, this.debris.mesh, this.rings.group, this.ghost.group, this.clutchArrow.group, this.timingRing.mesh, this.ribbons.mesh, this.after.group, this.gate.group, this.biomeFx.points);
     this.post = new PostFx(this.renderer, this.scene, this.rig.camera);
     this.resize();
   }
@@ -146,6 +170,8 @@ export class GameRenderer {
     this.debris.scale = q.particleScale;
     this.ribbons.scale = q.ribbonScale;
     this.after.count = q.afterimages;
+    this.biomeFx.scale = q.biomeParticles;
+    this.biomeFx.setPixelRatio(this.renderer.getPixelRatio());
     this.post.grain = q.grainScale;
     this.resize();
   }
@@ -161,6 +187,7 @@ export class GameRenderer {
     this.width = w;
     this.height = h;
     this.renderer.setPixelRatio(this.pixelRatio());
+    this.biomeFx.setPixelRatio(this.renderer.getPixelRatio());
     this.post.composer.setSize(w, h, false);
     this.canvas.style.width = '100%';
     this.canvas.style.height = '100%';
@@ -180,6 +207,10 @@ export class GameRenderer {
     this.zoneAmt = 0;
     this.lastBar = -1;
     this.post.desat = 0;
+    this.biomeCur = this.biomeFrom = this.biomeOverride >= 0 ? this.biomeOverride : state.tier - 1;
+    this.biomeBlend = 1;
+    this.darkAmt = 0;
+    this.rig.snapFlip(false);
     this.rig.reset(state.theta);
   }
 
@@ -220,6 +251,26 @@ export class GameRenderer {
       case 'tierUp':
         this.rig.addTrauma(SHAKE.tierUp);
         this.post.addSpike(0.01 * f);
+        break;
+      case 'biomeChange':
+        // the warp gate has just been passed: punch, stretch, and let the morph in frame() do the rest
+        this.rig.addTrauma(0.55);
+        this.post.addSpike(0.02 * f);
+        this.rig.fovKick(16 * (0.4 + 0.6 * f));
+        this.blurKick = 0.7 * f;
+        break;
+      case 'sectionStart':
+        if (e.name === 'FLIP') this.rig.addTrauma(0.25);
+        else if (e.name === 'GAUNTLET') this.rig.addTrauma(0.2);
+        break;
+      case 'gauntletClear':
+        this.shipPos(state);
+        this.triggerShock(0xffe9a8, 0.6, 1.4);
+        this.rings.emit(this.px, this.py, this.tmpColor.setHex(0xffe9a8), 6, 0.6, 0.5);
+        this.debris.emit(this.px, this.py, 0, 60, 14, 1.0, 0.14, 1, 0.85, 0.3, state.speed * 0.45);
+        this.rig.addTrauma(0.6);
+        this.rig.fovKick(10 * (0.4 + 0.6 * f));
+        this.post.addSpike(0.012 * f);
         break;
       case 'overdriveStart':
         this.rig.addTrauma(0.35);
@@ -346,9 +397,9 @@ export class GameRenderer {
       this.timingRing.update(next.beat - state.beatPos, next.z, this.edge, true);
     } else this.timingRing.hide();
     const g = view.ghost;
-    if (g) this.ghost.update(g.visible && state.alive, g.theta, g.z, 0, realDt);
+    if (g) this.ghost.update(g.visible && state.alive, g.theta, g.z, 0, realDt, this.xsAt(g.theta));
     else this.ghost.update(false, 0, 0, 0, realDt);
-    this.clutchArrow.update(state.clutch.active && state.alive, state.clutch.dir, state.theta, realDt);
+    this.clutchArrow.update(state.clutch.active && state.alive, state.clutch.dir, state.theta, realDt, this.shipRs);
   }
 
   /** Launch punch (countdown GO / retry). */
@@ -370,8 +421,8 @@ export class GameRenderer {
   private px = 0;
   private py = 0;
   private shipPos(state: GameState): void {
-    this.px = Math.cos(state.theta) * SHIP_RADIUS;
-    this.py = Math.sin(state.theta) * SHIP_RADIUS;
+    this.px = Math.cos(state.theta) * SHIP_RADIUS * this.shipRs;
+    this.py = Math.sin(state.theta) * SHIP_RADIUS * this.shipRs;
   }
 
   /** Expanding screen ring; always begins outside the central no-go circle and is transparent in the middle. */
@@ -386,8 +437,8 @@ export class GameRenderer {
   private shockHex = 0xffffff;
 
   private burst(state: GameState, n: number, speed: number, life: number, size: number): void {
-    const x = Math.cos(state.theta) * SHIP_RADIUS;
-    const y = Math.sin(state.theta) * SHIP_RADIUS;
+    const x = Math.cos(state.theta) * SHIP_RADIUS * this.shipRs;
+    const y = Math.sin(state.theta) * SHIP_RADIUS * this.shipRs;
     this.debris.emit(x, y, 0, n, speed, life, size, this.primary.r, this.primary.g, this.primary.b, state.speed * 0.5);
     this.debris.emit(x, y, 0, Math.floor(n / 3), speed * 1.4, life * 0.7, size * 0.6, 1, 1, 1, state.speed * 0.5);
   }
@@ -419,6 +470,34 @@ export class GameRenderer {
       maxY = Math.max(maxY, y);
     }
     return Math.max(maxX - minX, maxY - minY) / Math.min(this.width, this.height);
+  }
+
+  /** eased biome blend of this frame; `mixN` lerps a biome number with it (a method, not a closure: no per-frame allocation) */
+  private bkNow = 0;
+  private mixN(x: number, y: number): number {
+    return x + (y - x) * this.bkNow;
+  }
+
+  /** Relative cross-section radius in direction `phi` for the biome (morph included); mirrors the vertex shader. */
+  xsAt(phi: number): number {
+    const a = xsRadius(this.xsFrom, phi);
+    const b = xsRadius(this.xsTo, phi);
+    const k = this.biomeBlend * this.biomeBlend * (3 - 2 * this.biomeBlend);
+    return a + (b - a) * k;
+  }
+
+  /** Biome facts for the e2e tests. */
+  get biomeInfo(): Record<string, unknown> {
+    return {
+      biome: this.biomeCur,
+      from: this.biomeFrom,
+      blend: this.biomeBlend,
+      particles: this.biomeFx.currentKind,
+      dark: this.darkAmt,
+      flip: this.rig.flipRoll,
+      xsN: bendUniforms.uXsNB.value,
+      xsMix: bendUniforms.uXsMix.value,
+    };
   }
 
   /** ZONE palette blend 0..1 (debug / tests). */
@@ -460,6 +539,45 @@ export class GameRenderer {
     this.secondary.lerp(this.targetS, k);
     this.edge.copy(this.primary).lerp(WHITE, 0.5);
 
+    // ---- biome (DESIGN 20.1): the tier's world, morphing over ~0.6 s when the warp gate is passed (1.2 s fade in reduced-flash mode) ----
+    const want = this.biomeOverride >= 0 ? this.biomeOverride : state.tier - 1;
+    if (want !== this.biomeCur) {
+      this.biomeFrom = this.biomeCur;
+      this.biomeCur = want;
+      this.biomeBlend = 0;
+    }
+    if (this.biomeBlend < 1) this.biomeBlend = Math.min(1, this.biomeBlend + realDt / (view.flashScale < 1 ? 1.2 : 0.6));
+    const bk = this.biomeBlend * this.biomeBlend * (3 - 2 * this.biomeBlend);
+    const pa = BIOME_PALETTES[this.biomeFrom];
+    const pb = BIOME_PALETTES[this.biomeCur];
+    this.bkNow = bk;
+    const alive = state.alive;
+    // DARK: the lights go out while the ship is inside a DARK section
+    this.darkAmt += ((alive && state.section.name === 'DARK' ? 1 : 0) - this.darkAmt) * (1 - Math.exp(-realDt * 4));
+    const dark = this.darkAmt;
+    this.bgNormal.setHex(pa.bg).lerp(this.tmpA.setHex(pb.bg), bk).lerp(this.black, dark * 0.9);
+    this.tunnelVis.ring = this.mixN(pa.ring, pb.ring) * (1 - 0.85 * dark);
+    this.tunnelVis.long = this.mixN(pa.long, pb.long) * (1 - 0.9 * dark);
+    this.tunnelVis.lamp = this.mixN(pa.lamp, pb.lamp) * (1 - 0.95 * dark);
+    this.tunnelVis.shell.setHex(pa.shell).lerp(this.tmpA.setHex(pb.shell), bk).lerp(this.black, dark);
+    // cross-section (visual only): both shapes go to the vertex shader, the ship rides on the wall
+    fillXs(SHAPE_OF[this.biomeFrom], this.time, view.beat, this.xsFrom);
+    fillXs(SHAPE_OF[this.biomeCur], this.time, view.beat, this.xsTo);
+    bendUniforms.uXsEdgesA.value.set(this.xsFrom.edges);
+    bendUniforms.uXsNA.value = this.xsFrom.n;
+    bendUniforms.uXsRA.value = this.xsFrom.r;
+    bendUniforms.uXsEdgesB.value.set(this.xsTo.edges);
+    bendUniforms.uXsNB.value = this.xsTo.n;
+    bendUniforms.uXsRB.value = this.xsTo.r;
+    bendUniforms.uXsMix.value = bk;
+    this.shipRs = this.xsAt(state.theta);
+    const patterns = this.quality.patterns;
+    bendUniforms.uDash.value = this.mixN(pa.dash, pb.dash);
+    // ambient particles: the old kind fades out, the new one fades in
+    if (this.biomeBlend < 0.5) this.biomeFx.setKind(pa.particles, pa.particleColor);
+    else this.biomeFx.setKind(pb.particles, pb.particleColor);
+    this.rig.setFlip(alive && state.section.name === 'FLIP');
+
     // focus amount (eased)
     this.focusAmt += ((state.focusActive || state.clutch.active ? 1 : 0) - this.focusAmt) * (1 - Math.exp(-realDt * 9));
     this.nitroAmt += ((state.nitroT > 0 && state.alive ? 1 : 0) - this.nitroAmt) * (1 - Math.exp(-realDt * 8));
@@ -478,14 +596,38 @@ export class GameRenderer {
     bendUniforms.uZoneHue.value = state.beatPos * 0.0625 + this.time * 0.04;
     // A and above light the tunnel lines up
     const lineBright = 1 + Math.max(0, rank - 2) * 0.12;
-    this.obsEdge.copy(this.edge).lerp(this.zoneEdge, zone);
+    // obstacle look: the biome's edge colour / gain, overridden by the ZONE palette
+    const edgeMix = this.mixN(pa.edgeMix, pb.edgeMix);
+    this.obsEdge.copy(this.primary).lerp(WHITE, edgeMix).lerp(this.zoneEdge, zone);
     this.obsFill.copy(this.secondary).lerp(this.zoneFill, zone);
+    bendUniforms.uObsStyle.value = !patterns || zone > 0.5 ? 0 : bk < 0.5 ? pa.style : pb.style;
+    this.obstacles.setProfile(bk < 0.5 ? pa.profile : pb.profile);
+    const look = this.obsLook;
+    look.edge.copy(this.obsEdge);
+    look.darkEdge.copy(this.primary).lerp(WHITE, DARK_EDGE_MIX).lerp(this.zoneEdge, zone);
+    look.fill.copy(this.obsFill);
+    look.edgeGain = this.mixN(pa.edgeGain, pb.edgeGain) + (ZONE_EDGE_GAIN - this.mixN(pa.edgeGain, pb.edgeGain)) * zone;
+    look.fillMul = this.mixN(pa.fill, pb.fill) * (1 - zone) + zone;
+    look.beat = view.beat;
+    look.zone = zone;
 
     bendUniforms.uBendTime.value = this.time;
-    this.tunnel.update(state.dist, this.primary, this.secondary, view.beat, speedFrac, lineBright, zone);
-    this.obstacles.sync(state, this.obsEdge, this.obsFill, view.beat, NORMAL_EDGE_GAIN + (ZONE_EDGE_GAIN - NORMAL_EDGE_GAIN) * zone);
+    this.tunnel.update(state.dist, this.primary, this.secondary, view.beat, speedFrac, lineBright, zone, this.tunnelVis);
+    this.obstacles.sync(state, look);
+    this.biomeFx.update(state.dist, this.time, Math.abs(2 * this.biomeBlend - 1) * (1 - 0.7 * zone) * (1 - dark));
+    // warp gate: in the second before a tier-up it rushes at the ship; it reaches z = 0 exactly when the tier changes
+    {
+      const remaining = TIER_DURATION * state.tier - state.t;
+      const coming = alive && state.tier < MAX_TIER && remaining <= WARP_LEAD && remaining > -0.02;
+      const next = TIERS[Math.min(MAX_TIER, state.tier + 1) - 1];
+      if (coming) {
+        if (next.rainbow) this.tmpB.setHSL((this.time * 0.3) % 1, 1, 0.6);
+        else this.tmpB.setHex(next.primary);
+        this.gate.update(Math.min(1, (WARP_LEAD - remaining) / 0.2), -Math.max(0, remaining) * state.speed - 0.5, this.tmpB, this.time, view.flashScale < 1);
+      } else this.gate.update(0, 0, this.tmpB, this.time, false);
+    }
     this.ribbons.update(realDt, this.time, state.dist, zone, state.zone.lv, view.beat, view.flashScale);
-    this.after.update(realDt, state.theta, state.angVel, state.alive ? zone : 0, view.flashScale);
+    this.after.update(realDt, state.theta, state.angVel, state.alive ? zone : 0, view.flashScale, this.shipRs);
     this.items.sync(state, this.edge, sdt);
     this.bubble.update(state.shield && state.alive, realDt);
     this.updateBeatFx(state, view, realDt);
@@ -493,10 +635,10 @@ export class GameRenderer {
     this.lines.update(sdt, state.speed, speedFrac, state.overdrive, this.edge, rank >= 4 ? 2 : 1);
 
     if (state.alive) {
-      this.ship.update(state.theta, state.angVel, realDt, this.edge, state.overdrive || this.nitroAmt > 0.5, speedFrac + this.nitroAmt * 0.3, state.overdrive || this.nitroAmt > 0.5);
+      this.ship.update(state.theta, state.angVel, realDt, this.edge, state.overdrive || this.nitroAmt > 0.5, speedFrac + this.nitroAmt * 0.3, state.overdrive || this.nitroAmt > 0.5, this.shipRs);
       // thrust sparks
-      const x = Math.cos(state.theta) * SHIP_RADIUS;
-      const y = Math.sin(state.theta) * SHIP_RADIUS;
+      const x = Math.cos(state.theta) * SHIP_RADIUS * this.shipRs;
+      const y = Math.sin(state.theta) * SHIP_RADIUS * this.shipRs;
       this.debris.emit(x, y, 0.8, 1, 1.5, 0.28, 0.13, this.primary.r, this.primary.g, this.primary.b, state.speed * 0.55);
       if (zone > 0.5) {
         // rainbow aura trail
@@ -511,7 +653,7 @@ export class GameRenderer {
     if (zoneOn && this.lastBar >= 0 && bar !== this.lastBar) this.rig.fovKick(2.5 * (0.4 + 0.6 * view.flashScale));
     this.lastBar = bar;
     this.rig.rumbleBoost = 1 + (rank >= 5 ? 0.7 : 0) + (rank >= 6 ? 0.6 : 0) + zone * 0.5;
-    this.rig.update(state.theta, state.angVel, state.baseSpeed, state.overdrive, realDt, view.flashScale, this.nitroAmt * 12 * (0.5 + 0.5 * view.flashScale) + zone * 8);
+    this.rig.update(state.theta, state.angVel, state.baseSpeed, state.overdrive, realDt, view.flashScale, this.nitroAmt * 12 * (0.5 + 0.5 * view.flashScale) + zone * 8, 1 + 0.5 * (this.shipRs - 1));
     // shockwave ring (screen space, radius in half-short-side units; see fx.ts)
     if (this.shockT < 1) {
       this.shockT = Math.min(1, this.shockT + realDt / 0.8);

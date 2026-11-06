@@ -30,6 +30,12 @@ export interface QualitySettings {
   afterimages: number;
   /** ZONE: film grain pass strength multiplier */
   grainScale: number;
+  /** biome ambient particles (embers / glints / bits / stars): fraction drawn */
+  biomeParticles: number;
+  /** obstacle shader patterns of the biomes (scan lines, shimmer, ...) */
+  patterns: boolean;
+  /** DATA STREAM line dashes, INFERNO flicker etc. are cheap; the warp gate's extra ghost ring is not drawn below this tier */
+  gateGhost: boolean;
 }
 
 /** Fills `out` for `tier` (0 = full quality). */
@@ -44,6 +50,10 @@ export function settingsFor(tier: number, out: QualitySettings): QualitySettings
   out.ribbonScale = t >= 6 ? 0.25 : t >= 5 ? 0.4 : t >= 3 ? 0.7 : 1;
   out.afterimages = t >= 6 ? 0 : t >= 5 ? 1 : t >= 4 ? 2 : 3;
   out.grainScale = t >= 4 ? 0 : t >= 3 ? 0.5 : 1;
+  // course extras (DESIGN 20): ambient biome particles thin out from tier 3, the shader patterns and the gate ghost go at 5
+  out.biomeParticles = t >= 6 ? 0.15 : t >= 5 ? 0.4 : t >= 3 ? 0.7 : 1;
+  out.patterns = t < 5;
+  out.gateGhost = t < 5;
   return out;
 }
 

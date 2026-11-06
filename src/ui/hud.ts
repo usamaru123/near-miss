@@ -384,6 +384,24 @@ export class Hud {
     void el.offsetWidth;
     this.shownAt.set(el, performance.now());
     el.classList.add('show');
+    this.keepClearOfNoGo(el);
+  }
+
+  /**
+   * The capacity estimate above assumes every pop-up is about 36 px tall; ZONE and tier titles are taller, so a full stack could
+   * reach into the central no-go circle (DESIGN 14). Measure the real column: while it hangs into the circle (minus a small margin for the
+   * pop-in scale / lift), retire the oldest pop-up that is not `keep` (ZONE pay-out lines go last).
+   */
+  private keepClearOfNoGo(keep: HTMLElement): void {
+    const limit = window.innerHeight / 2 - 0.2 * Math.min(window.innerWidth, window.innerHeight) - 4;
+    for (let guard = 0; guard < POPUPS; guard++) {
+      if (this.popupBox.getBoundingClientRect().bottom <= limit) return;
+      const live = this.popups.filter((p) => p !== keep && !p.classList.contains('off'));
+      const victim = live.find((p) => !p.classList.contains('zoneclear') && !p.classList.contains('zonebreak')) ?? live[0];
+      if (!victim) return;
+      if (victim === this.clearEl) this.clearEl = null;
+      victim.classList.add('off');
+    }
   }
 
   /** PB pace line under the score: green when ahead of the best, red when behind. null hides it. */
@@ -450,6 +468,7 @@ export class Hud {
   }
 
   flash(color: string, strength: number): void {
+    this.flashEl.classList.remove('warpfade'); // the two animations must never be on the element together
     this.flashEl.style.background = color;
     this.flashEl.style.setProperty('--o', (strength * this.flashScale).toFixed(3));
     retrigger(this.flashEl, 'fade');
@@ -483,6 +502,34 @@ export class Hud {
   tierBanner(tier: number): void {
     const t = TIERS[tier - 1];
     this.popup('TIER ' + tier + ' // ' + t.name, 'tier', t.rainbow ? '#ffffff' : '#' + t.primary.toString(16).padStart(6, '0'));
+  }
+
+  /** Biome name in the top band after the warp gate (DESIGN 20.1). */
+  biomeBanner(name: string, color: string): void {
+    this.popup(name, 'biome', color);
+  }
+
+  /** Warp white-out: a quick white flash, or - in reduced-flash mode - a slow soft fade (no abrupt change of brightness). */
+  warpFlash(reduced: boolean): void {
+    if (!reduced) {
+      this.flash('#ffffff', 1);
+      return;
+    }
+    this.flashEl.classList.remove('fade');
+    this.flashEl.style.background = '#ffffff';
+    this.flashEl.style.setProperty('--o', '0.2');
+    retrigger(this.flashEl, 'warpfade');
+  }
+
+  /** Section banner / notice (top band, stacked with the other pop-ups). */
+  sectionBanner(text: string, cls: string, color?: string): void {
+    this.popup(text, cls, color);
+  }
+
+  gauntletClear(points: number): void {
+    this.popup('CLEAR! +' + formatScore(points), 'gclear');
+    retrigger(this.score, 'swell');
+    this.fx.spark(this.rectOf(this.score), FX_COLOR.gold, 22);
   }
 
   overdriveBanner(on: boolean): void {

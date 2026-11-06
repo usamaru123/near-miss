@@ -70,7 +70,8 @@ describe('beat grid: obstacle pass times land on the 8th-note grid', () => {
       let worst = 0;
       let count = 0;
       for (const seed of SEEDS) {
-        const s = createState(seed, true, ramp);
+        // items off: an idle ship that happens to pick up a NITRO would (by design) leave the grid
+        const s = createState(seed, false, ramp);
         s.invincible = true;
         const prevZ = new Map<number, number>();
         for (let i = 0; i < 120 * 120; i++) {
@@ -87,7 +88,7 @@ describe('beat grid: obstacle pass times land on the 8th-note grid', () => {
           if (i % 600 === 0) for (const k of [...prevZ.keys()]) if (!s.obstacles.some((o) => o.id === k)) prevZ.delete(k);
         }
       }
-      expect(count).toBeGreaterThan(900);
+      expect(count).toBeGreaterThan(600); // sections thin the course out (build x1.25, breather x2.1 of the design gap)
       expect(worst).toBeLessThanOrEqual(0.002);
       console.log('max grid offset over', count, 'obstacles (ramp=' + ramp + '):', (worst * 1000).toFixed(3), 'ms');
     });

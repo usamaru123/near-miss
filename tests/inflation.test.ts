@@ -150,7 +150,7 @@ describe('ZONE palette: obstacles are at least as readable as in the normal pale
 });
 
 describe('adaptive quality covers the ZONE effects (DESIGN 17.6 / 18.4)', () => {
-  const q: QualitySettings = settingsFor(0, { tier: 0, dprCap: 2, bloomHalf: false, blurTaps: 10, particleScale: 1, ribbonScale: 1, afterimages: 3, grainScale: 1 });
+  const q: QualitySettings = settingsFor(0, { tier: 0, dprCap: 2, bloomHalf: false, blurTaps: 10, particleScale: 1, ribbonScale: 1, afterimages: 3, grainScale: 1, biomeParticles: 1, patterns: true, gateGhost: true });
   it('full quality: all ribbons, 3 after-images, full grain', () => {
     settingsFor(0, q);
     expect(q.ribbonScale).toBe(1);

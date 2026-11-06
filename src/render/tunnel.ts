@@ -8,11 +8,21 @@ import { NORMAL_LINE_PEAK, ZONE_LINE_PEAK } from './palette';
 const PERIOD = 24;
 const RING_OFFSETS = [0, 2.1, 4.6, 7.4, 10.3, 13.2, 17.5, 20.2];
 const PERIODS = 15;
-const RING_SEGS = 64;
+// 72 = a multiple of 4, 6 and 9: the corners of the square, hexagon and nine-sided cross-sections fall on vertices
+const RING_SEGS = 72;
 const LONG_COUNT = 36;
 const LONG_LEN = PERIOD * PERIODS;
 const LAMP_OFFSETS = [1.0, 6.0, 12.5, 19.0];
 const LAMP_ANGLES = 8;
+
+/** Per-biome look of the tunnel (renderer.ts blends these between biomes while the warp morphs). */
+export interface TunnelVis {
+  ring: number;
+  long: number;
+  lamp: number;
+  shell: THREE.Color;
+}
+const DEFAULT_VIS: TunnelVis = { ring: 1, long: 1, lamp: 1, shell: new THREE.Color(0x05050f) };
 
 /** Scrolling neon grid: rings + longitudinal lines + near-field wall lamps. Moved by dist. */
 export class Tunnel {
@@ -22,7 +32,7 @@ export class Tunnel {
   private readonly lampMat: THREE.MeshBasicMaterial;
   private readonly scroll = new THREE.Group();
   private readonly shellMat: THREE.MeshBasicMaterial;
-  private readonly shellNormal = new THREE.Color(0x05050f);
+  private readonly shellBase = new THREE.Color(0x05050f);
 
   constructor() {
     const r = TUNNEL_R + 0.02;
@@ -112,12 +122,12 @@ export class Tunnel {
    * `zone` (0..1) is the ZONE palette blend: black shell, rainbow lines (the rainbow itself is in the shader),
    * deliberately calmer than the normal lines so obstacles stand out more, not less.
    */
-  update(dist: number, primary: THREE.Color, secondary: THREE.Color, pulse: number, speedFrac: number, bright = 1, zone = 0): void {
+  update(dist: number, primary: THREE.Color, secondary: THREE.Color, pulse: number, speedFrac: number, bright = 1, zone = 0, vis: TunnelVis = DEFAULT_VIS): void {
     this.scroll.position.z = dist % PERIOD;
     const calm = 1 - zone * (1 - ZONE_LINE_PEAK / NORMAL_LINE_PEAK);
-    this.ringMat.color.copy(primary).multiplyScalar((0.5 + 0.55 * pulse + 0.25 * speedFrac) * bright * calm);
-    this.longMat.color.copy(secondary).multiplyScalar((0.28 + 0.2 * pulse) * bright * (1 + zone * 0.4));
-    this.lampMat.color.copy(secondary).lerp(primary, 0.4).multiplyScalar(2.4 * (1 + (bright - 1) * 0.5) * (1 - zone * 0.45));
-    this.shellMat.color.copy(this.shellNormal).multiplyScalar(1 - zone);
+    this.ringMat.color.copy(primary).multiplyScalar((0.5 + 0.55 * pulse + 0.25 * speedFrac) * bright * calm * vis.ring);
+    this.longMat.color.copy(secondary).multiplyScalar((0.28 + 0.2 * pulse) * bright * (1 + zone * 0.4) * vis.long);
+    this.lampMat.color.copy(secondary).lerp(primary, 0.4).multiplyScalar(2.4 * (1 + (bright - 1) * 0.5) * (1 - zone * 0.45) * vis.lamp);
+    this.shellMat.color.copy(this.shellBase).copy(vis.shell).multiplyScalar(1 - zone);
   }
 }

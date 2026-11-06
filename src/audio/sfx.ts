@@ -611,7 +611,61 @@ export class Sfx {
     a.play('coin', { time: t + 0.3, db: 1, rate: 0.9 + exp * 0.02, send: 0.3 });
   }
 
+  /** Warp gate passed (DESIGN 20.1): the swell has played, now the hit - a sweep, a crash, one sub drop and a bright chord. */
+  private _warp(): void {
+    if (!this.ok) return;
+    const a = this.a;
+    const t = a.now;
+    if (!a.play('fxWarp', { time: t, db: 4, rate: 1.1, send: 0.4, dur: 1.0, fade: 0.3 })) {
+      a.osc({ time: t, type: 'sawtooth', f0: 1800, f1: 220, dur: 0.8, peak: 0.07, attack: 0.01, send: 0.3 });
+    }
+    a.play('crashBig', { time: t, db: 0, dur: 1.2, fade: 0.4, send: 0.3 });
+    a.play('subDrop', { time: t, db: -3, dur: 0.8, fade: 0.3 });
+    a.noise({ time: t, dur: 0.7, type: 'bandpass', f0: 300, f1: 9000, q: 1.1, peak: 0.2, attack: 0.01, send: 0.3 });
+    [0, 7, 12, 19].forEach((semi, i) => this.pluck.triggerAttackRelease(a5(semi), 0.12, t + 0.05 + i * 0.05, 0.7));
+    this.bell.triggerAttackRelease(a5(12), 0.9, t + 0.05, 0.45);
+  }
+
+  /** FLIP: the camera rolls over - a pitched whoosh sweeping across and a short rising tone. */
+  private _flip(): void {
+    if (!this.ok) return;
+    const a = this.a;
+    const t = a.now;
+    a.play('whoosh2', { time: t, db: 2, rate: 0.8, send: 0.3, dur: 0.7, fade: 0.2 });
+    a.osc({ time: t, type: 'triangle', f0: 240, f1: 960, dur: 0.55, peak: 0.1, attack: 0.04, pan: -0.2, send: 0.25 });
+    a.noise({ time: t, dur: 0.6, type: 'bandpass', f0: 500, f1: 5200, q: 1.2, peak: 0.16, attack: 0.15, send: 0.2 });
+  }
+
+  /** GAUNTLET cleared: fanfare - a rising major arpeggio, coins and a chime over a kick. */
+  private _gauntletClear(): void {
+    if (!this.ok) return;
+    const a = this.a;
+    const t = a.now;
+    [0, 4, 7, 12, 16, 19, 24].forEach((semi, i) => {
+      this.pluck.triggerAttackRelease(a5(semi - 12), 0.1, t + i * 0.055, 0.8);
+      if (i % 3 === 0) this.bell.triggerAttackRelease(a5(semi), 0.7, t + i * 0.055, 0.5);
+    });
+    a.play('kickHeavy', { time: t, db: -1 });
+    a.play('coin', { time: t + 0.1, db: 3, rate: 1.1, send: 0.3 });
+    a.play('coin', { time: t + 0.42, db: 3, rate: 1.4, send: 0.3 });
+    a.play('glassChime', { time: t + 0.35, db: 3, rate: 1.3, send: 0.4 });
+    a.play('crash', { time: t + 0.38, db: -1, dur: 1.0, fade: 0.4, send: 0.3 });
+  }
+
   // ---- level-trimmed entry points ----
+
+  warp(): void {
+    this.scoped(0.42, () => this._warp());
+  }
+
+  flip(): void {
+    this.scoped(0.5, () => this._flip());
+  }
+
+  gauntletClear(): void {
+    this.scoped(0.5, () => this._gauntletClear());
+  }
+
 
   rankUp(rank: number): void {
     this.scoped(0.62, () => this._rankUp(rank));

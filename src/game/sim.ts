@@ -43,7 +43,6 @@ import {
   FOCUS_DRAIN,
   FOCUS_REGEN,
   FOCUS_TIMESCALE,
-  HIT_WINDOW,
   INSANE_ADRENALINE,
   INSANE_DIST,
   INSANE_FOCUS,
@@ -62,8 +61,15 @@ import {
   SMASH_SCORE,
   SPAWN_AHEAD,
   START_THETA,
+  FIRST_SECTION_BEAT,
+  LASER_BEATS,
+  GAUNTLET_CLEAR_SCORE,
+  GAUNTLET_CLEAR_STYLE,
+  NOTICE_BEATS,
+  TAU,
 } from './constants';
-import { beatAt, bpmAtSpeed, gridOffsetSec, isOnBeat, LAUNCH_LOSS, launchFactor, speedAt, tierAt } from './difficulty';
+import type { SectionName } from './constants';
+import { beatAt, bpmAtSpeed, gridOffsetSec, isOnBeat, LAUNCH_LOSS, launchFactor, speedAt, tierAt, timeAtBeat } from './difficulty';
 import { createSpawner, nextObstacle, peekObstacle } from './spawner';
 import {
   addStyle,
@@ -125,6 +131,7 @@ export function createState(seed: number, itemsEnabled = true, launchRamp = fals
     milestoneExp: MILESTONE_FIRST_EXP - 1,
     tier: 1,
     maxTier: 1,
+    section: { idx: -1, name: 'RANDOM', role: 'build', intensity: 0.4, startBeat: 0, endBeat: FIRST_SECTION_BEAT, next: 0, noticed: -1, gauntlets: 0 },
     alive: true,
     deathTimer: 0,
     deathDone: false,
@@ -145,6 +152,45 @@ export function createState(seed: number, itemsEnabled = true, launchRamp = fals
     spawner: createSpawner(seed, itemsEnabled, launchRamp ? -LAUNCH_LOSS : 0),
     events: [],
   };
+}
+
+/**
+ * Debug / e2e: make the next section of the course `name`. Everything further than 45 units ahead is cut and the
+ * generator carries on from the last obstacle that stays, so the new section starts within a couple of seconds.
+ * Fairness is unchanged: the new chain is validated against the kept obstacle like any other.
+ */
+export function forceSection(s: GameState, name: SectionName): void {
+  const sp = s.spawner;
+  const KEEP = 45;
+  const keep = s.obstacles.filter((o) => -o.z <= KEEP);
+  s.obstacles.length = 0;
+  for (const o of keep) s.obstacles.push(o);
+  sp.queue.length = 0;
+  sp.shardQ.length = 0;
+  sp.powerQ.length = 0;
+  s.shards = s.shards.filter((x) => -x.z <= KEEP);
+  s.powerups = s.powerups.filter((x) => -x.z <= KEEP);
+  const last = keep[keep.length - 1];
+  if (last) {
+    sp.beat = last.beat;
+    sp.tNom = last.tNom;
+    sp.prevSafe = last.safe;
+    const half = last.kind === 'LASER' ? LASER_BEATS / 2 : 0;
+    sp.prevHalf = half;
+    sp.prevTrail = half > 0 ? timeAtBeat(last.beat + half) - timeAtBeat(last.beat) : 0;
+  } else {
+    sp.beat = Math.ceil(s.beatPos) + 1;
+    sp.tNom = timeAtBeat(sp.beat);
+    sp.prevSafe = [{ a: s.theta, b: s.theta }];
+    sp.prevHalf = 0;
+    sp.prevTrail = 0;
+  }
+  sp.recent = keep.slice(-8);
+  sp.itemCursor = sp.recent.length;
+  const start = Math.ceil((sp.beat + 1) / 4) * 4;
+  const def = sp.dir.force(name, start, 8);
+  sp.sec = { idx: -1, center: null, dir: 1, n: 0 };
+  s.section.next = Math.min(s.section.next, def.idx);
 }
 
 export type NearMissClass = 'insane' | 'near' | 'none';
@@ -178,6 +224,24 @@ function updateMove(s: GameState, move: number, sdt: number): void {
   s.theta = wrap(s.theta + s.angVel * sdt);
 }
 
+/**
+ * PULSE_RING breathing: the gap is fully open when the ring reaches the ship and closes to a sliver half a beat
+ * earlier. The phase follows the ring's distance (beats of road at the base speed), exactly like a spinner's
+ * rotation follows it, so boosts (NITRO / OVERDRIVE) can never catch the gap shut.
+ */
+export function pulseWidth(p: { wOpen: number; wClosed: number }, z: number, baseSpeed: number, bpm: number): number {
+  const u = (-z / Math.max(1, baseSpeed)) * (bpm / 60); // beats until it reaches the ship
+  const k = 0.5 + 0.5 * Math.cos(TAU * u);
+  return p.wClosed + (p.wOpen - p.wClosed) * k;
+}
+
+function updatePulse(o: Obstacle, baseSpeed: number, bpm: number): void {
+  const p = o.pulse!;
+  const w = pulseWidth(p, o.z, baseSpeed, bpm);
+  o.cur[0].a = wrap(p.center + w / 2);
+  o.cur[0].b = wrap(p.center - w / 2);
+}
+
 function rotOf(o: Obstacle, baseSpeed: number): number {
   // Rotation is defined relative to the hit moment so the safe zone at hit time is exact
   // regardless of OVERDRIVE speed changes.
@@ -190,7 +254,7 @@ function shipDistance(o: Obstacle, theta: number): number {
   const sb = theta + SHIP_HALF_ANGLE;
   const rot = o.omega !== 0 ? o.rot : 0;
   let m = Infinity;
-  const arcs = o.solids;
+  const arcs = o.cur;
   for (let i = 0; i < arcs.length; i++) {
     const d = arcDistance(sa, sb, arcs[i].a + rot, arcs[i].b + rot);
     if (d < m) m = d;
@@ -203,8 +267,8 @@ function passPan(o: Obstacle, theta: number): number {
   const rot = o.omega !== 0 ? o.rot : 0;
   let best = Infinity;
   let pan = 0;
-  for (let i = 0; i < o.solids.length; i++) {
-    const c = arcCenter(o.solids[i].a + rot, o.solids[i].b + rot);
+  for (let i = 0; i < o.cur.length; i++) {
+    const c = arcCenter(o.cur[i].a + rot, o.cur[i].b + rot);
     const d = angDiff(theta, c);
     if (Math.abs(d) < best) {
       best = Math.abs(d);
@@ -212,6 +276,39 @@ function passPan(o: Obstacle, theta: number): number {
     }
   }
   return Math.max(-1, Math.min(1, pan / (Math.PI / 2)));
+}
+
+/** Announce / start sections as the beat clock crosses their boundaries (the BGM phrase heads line up with them). */
+function sectionEvents(s: GameState): void {
+  const dir = s.spawner.dir;
+  const sec = s.section;
+  for (;;) {
+    const nd = dir.get(sec.next);
+    if (s.beatPos >= nd.startBeat) {
+      // (only a real crossing pays: tests and debug hooks that jump the clock must not collect old GAUNTLETs)
+      if (sec.name === 'GAUNTLET' && sec.idx >= 0 && s.beatPos - nd.startBeat < 1) {
+        const points = GAUNTLET_CLEAR_SCORE * totalMult(s);
+        gain(s, points);
+        addStyle(s, GAUNTLET_CLEAR_STYLE);
+        sec.gauntlets++;
+        push(s, { type: 'gauntletClear', points });
+      }
+      sec.idx = nd.idx;
+      sec.name = nd.name;
+      sec.role = nd.role;
+      sec.intensity = nd.intensity;
+      sec.startBeat = nd.startBeat;
+      sec.endBeat = nd.endBeat;
+      sec.next = nd.idx + 1;
+      push(s, { type: 'sectionStart', name: nd.name, idx: nd.idx, role: nd.role, intensity: nd.intensity, bars: (nd.endBeat - nd.startBeat) / 4, startBeat: nd.startBeat });
+      continue;
+    }
+    if (sec.noticed < nd.idx && nd.name !== 'RANDOM' && s.beatPos >= nd.startBeat - NOTICE_BEATS) {
+      sec.noticed = nd.idx;
+      push(s, { type: 'sectionNotice', name: nd.name, inBeats: nd.startBeat - s.beatPos });
+    }
+    break;
+  }
 }
 
 function push(s: GameState, e: GameEvent): void {
@@ -311,9 +408,9 @@ function penetration(o: Obstacle, theta: number, out: Pen): Pen {
   const rot = o.omega !== 0 ? o.rot : 0;
   out.p = 0;
   out.dir = 0;
-  for (let i = 0; i < o.solids.length; i++) {
-    const a = o.solids[i].a + rot;
-    const b = o.solids[i].b + rot;
+  for (let i = 0; i < o.cur.length; i++) {
+    const a = o.cur[i].a + rot;
+    const b = o.cur[i].b + rot;
     if (arcDistance(sa, sb, a, b) > 0) continue;
     const plus = wrap(b - sa); // shift needed to leave through the CCW end
     const minus = wrap(sb - a); // ... through the CW end
@@ -401,7 +498,7 @@ export function applyItem(s: GameState, kind: ItemKind): void {
       let w = 0;
       for (let i = 0; i < obs.length; i++) {
         const o = obs[i];
-        if (o.z <= HIT_WINDOW && -o.z <= EMP_RANGE) n++;
+        if (o.z <= o.hw && -o.z <= EMP_RANGE) n++;
         else obs[w++] = o;
       }
       obs.length = w;
@@ -592,7 +689,9 @@ export function step(s: GameState, input: Input, dt: number): GameEvent[] {
       s.tier = tier;
       if (tier > s.maxTier) s.maxTier = tier;
       push(s, { type: 'tierUp', tier });
+      push(s, { type: 'biomeChange', biome: tier - 1 });
     }
+    sectionEvents(s);
     if (s.overdrive) {
       s.overdriveT -= sdtEff;
       if (s.overdriveT <= 0) {
@@ -663,10 +762,11 @@ export function step(s: GameState, input: Input, dt: number): GameEvent[] {
     const prevZ = o.z;
     o.z = s.dist - o.pos;
     if (o.omega !== 0) o.rot = rotOf(o, s.baseSpeed);
+    if (o.pulse !== null) updatePulse(o, s.baseSpeed, s.bpm);
     let removed = false;
 
     const pending = s.clutch.active && o === s.clutch.obs; // collision with this one is deferred
-    if (s.alive && !pending && prevZ <= HIT_WINDOW && o.z >= -HIT_WINDOW) {
+    if (s.alive && !pending && prevZ <= o.hw && o.z >= -o.hw) {
       o.overlapped = true;
       const d = shipDistance(o, s.theta);
       if (d < o.minDist) o.minDist = d;
@@ -694,12 +794,12 @@ export function step(s: GameState, input: Input, dt: number): GameEvent[] {
       }
     }
 
-    if (!removed && o.z > HIT_WINDOW) {
+    if (!removed && o.z > o.hw) {
       if (s.alive && o.overlapped && !o.touched && o.minDist !== Infinity) {
         const cls = classifyNearMiss(o.minDist);
         const pan = passPan(o, s.theta);
         // sim time at which the obstacle finished passing the ship (interpolated inside the step)
-        const tPass = s.t - (o.z - HIT_WINDOW) / Math.max(1, s.speed);
+        const tPass = s.t - (o.z - o.hw) / Math.max(1, s.speed);
         const onBeat = s.beatBonus && isOnBeat(gridOffsetSec(tPass));
         if (cls !== 'none') award(s, cls, o.minDist, pan, onBeat);
         else push(s, { type: 'pass', pan, dist: o.minDist, onBeat });

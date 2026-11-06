@@ -7,10 +7,12 @@ import {
   FOV_OVERDRIVE,
   LAUNCH_START_FOV,
   MAX_ANG_VEL,
+  FLIP_ROLL_TIME,
   SHIP_RADIUS,
   SPEED_BASE,
   SPEED_MAX,
 } from '../game/constants';
+import { flipInputSign } from './biome';
 import { FOV_HARD_MAX, baseVfov, camZFor } from './viewFit';
 
 const CAM_RADIUS = 2.9;
@@ -33,6 +35,29 @@ export class CameraRig {
   private camZ = CAM_Z;
   /** SS / SSS / ZONE rattle the camera more (DESIGN 18.3); 1 = normal */
   rumbleBoost = 1;
+  /** FLIP (DESIGN 20.2): 0 = upright, 1 = upside down; the roll takes FLIP_ROLL_TIME seconds either way */
+  private flipTarget = 0;
+  private flipP = 0;
+
+  setFlip(on: boolean): void {
+    this.flipTarget = on ? 1 : 0;
+  }
+
+  /** Roll about the view axis in radians (0 .. pi), eased. */
+  get flipRoll(): number {
+    const p = this.flipP;
+    return Math.PI * p * p * (3 - 2 * p);
+  }
+
+  /** Multiplier for the steering input so that left is always screen-left, whatever the roll. */
+  get inputSign(): number {
+    return flipInputSign(this.flipRoll);
+  }
+
+  /** Jump to a flip state without the animation (reset / tests). */
+  snapFlip(on: boolean): void {
+    this.flipTarget = this.flipP = on ? 1 : 0;
+  }
 
   constructor(aspect: number) {
     this.camera = new THREE.PerspectiveCamera(FOV_MIN, aspect, 0.1, 420);
@@ -79,10 +104,16 @@ export class CameraRig {
     return this.trauma;
   }
 
-  update(theta: number, angVel: number, baseSpeed: number, overdrive: boolean, dt: number, shakeScale: number, fovBoost = 0): void {
+  /** `xsK`: how far the camera follows the cross-section's radius at the ship's angle (1 = round tunnel). */
+  update(theta: number, angVel: number, baseSpeed: number, overdrive: boolean, dt: number, shakeScale: number, fovBoost = 0, xsK = 1): void {
     this.time += dt;
+    if (this.flipP !== this.flipTarget) {
+      const step = dt / FLIP_ROLL_TIME;
+      this.flipP = this.flipP < this.flipTarget ? Math.min(this.flipTarget, this.flipP + step) : Math.max(this.flipTarget, this.flipP - step);
+    }
+    const roll = this.flipRoll;
     this.ang += angDiff(this.ang, theta) * (1 - Math.exp(-dt * 11));
-    const tiltTarget = Math.max(-1, Math.min(1, angVel / MAX_ANG_VEL)) * CAM_ROLL_MAX;
+    const tiltTarget = Math.max(-1, Math.min(1, angVel / MAX_ANG_VEL)) * CAM_ROLL_MAX * Math.cos(roll);
     this.tilt += (tiltTarget - this.tilt) * (1 - Math.exp(-dt * 6));
 
     const speedFrac = Math.max(0, Math.min(1, (baseSpeed - SPEED_BASE) / (SPEED_MAX - SPEED_BASE)));
@@ -110,11 +141,11 @@ export class CameraRig {
 
     const c = Math.cos(this.ang);
     const s = Math.sin(this.ang);
-    this.camera.position.set(c * CAM_RADIUS, s * CAM_RADIUS, this.camZ);
+    this.camera.position.set(c * CAM_RADIUS * xsK, s * CAM_RADIUS * xsK, this.camZ);
     this.camera.up.set(-c, -s, 0);
     this.camera.lookAt(this.target);
     this.camera.translateX(sx + rx);
     this.camera.translateY(sy + ry);
-    this.camera.rotateZ(this.tilt + sr);
+    this.camera.rotateZ(this.tilt + sr + roll);
   }
 }

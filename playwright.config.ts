@@ -31,11 +31,11 @@ export default defineConfig({
     launchOptions: { args: chromiumArgs },
   },
   projects: [
-    { name: 'chromium', testMatch: /(smoke|zone)\.spec\.ts/, use: { browserName: 'chromium' } },
-    { name: 'iphone-portrait', testMatch: /(mobile|zone)\.spec\.ts/, use: chromiumAs('iPhone 15 Pro') },
-    { name: 'iphone-landscape', testMatch: /(mobile|zone)\.spec\.ts/, use: chromiumAs('iPhone 15 Pro landscape') },
-    { name: 'pixel7-portrait', testMatch: /(mobile|zone)\.spec\.ts/, use: { ...devices['Pixel 7'] } },
-    { name: 'pixel7-landscape', testMatch: /(mobile|zone)\.spec\.ts/, use: { ...devices['Pixel 7 landscape'] } },
+    { name: 'chromium', testMatch: /(smoke|zone|course)\.spec\.ts/, use: { browserName: 'chromium' } },
+    { name: 'iphone-portrait', testMatch: /(mobile|zone|course)\.spec\.ts/, use: chromiumAs('iPhone 15 Pro') },
+    { name: 'iphone-landscape', testMatch: /(mobile|zone|course)\.spec\.ts/, use: chromiumAs('iPhone 15 Pro landscape') },
+    { name: 'pixel7-portrait', testMatch: /(mobile|zone|course)\.spec\.ts/, use: { ...devices['Pixel 7'] } },
+    { name: 'pixel7-landscape', testMatch: /(mobile|zone|course)\.spec\.ts/, use: { ...devices['Pixel 7 landscape'] } },
   ],
   webServer: {
     command: 'npm run build && npm run preview -- --port 4173 --strictPort',

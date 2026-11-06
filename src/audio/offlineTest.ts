@@ -312,6 +312,60 @@ async function render(scenario: string, seconds: number, tap: 'master' | 'mix' |
       });
       at(8, () => sfx.death());
       at(8.2, () => sfx.boom());
+    } else if (scenario.startsWith('course')) {
+      // 'course-nosfx' / 'course-nosec' drop the new effects / the section music changes (to see which one sets the peak)
+      const noSfx = scenario.includes('nosfx');
+      const noSec = scenario.includes('nosec');
+      // 'course-music': only the music (every section change in turn): the low-end metric of DESIGN 16.1
+      const musicOnly = scenario.includes('music');
+      // worst case with the course (DESIGN 20): top tier, OVERDRIVE, NITRO, ZONE layers, every section's music change in
+      // turn (GAUNTLET snare roll, DARK bass, BREATHER thinning, FLIP reverse cymbal) and the warp / flip / fanfare effects
+      // on top of the usual pile. 'course-stack' fires all of the new effects at the same instant.
+      music.start(6, 185);
+      at(0.2, () => music.setRank(6));
+      at(0.5, () => music.setOverdrive(true));
+      at(0.5, () => music.setNitro(true));
+      if (!scenario.includes('nozone')) at(0.6, () => music.zoneEnter());
+      const bar = (4 * 60) / 185;
+      if (!noSec) music.setSection('GAUNTLET', 1, 4, 0, 0);
+      const plan: [number, 'DARK' | 'BREATHER' | 'FLIP' | 'GAUNTLET' | 'LASER'][] = [
+        [4, 'DARK'],
+        [8, 'FLIP'],
+        [12, 'BREATHER'],
+        [16, 'GAUNTLET'],
+        [20, 'LASER'],
+      ];
+      if (!noSec) plan.forEach(([bars, name], i) => {
+        at(bars * bar - 0.05, () => music.setSection(name, 0.9, 4, bars * 4, i + 1));
+      });
+      at(7 * bar, () => music.sectionNotice('FLIP', 4));
+      for (let k = 0; k < (musicOnly ? 0 : 14); k++) {
+        const tt = 1 + k * 0.45;
+        at(tt, () => sfx.insane(0, -0.5));
+        at(tt + 0.1, () => sfx.smash());
+        at(tt + 0.1, () => sfx.shard(k));
+        at(tt + 0.2, () => sfx.whoosh(0.4, 1));
+        if (!noSfx && k % 3 === 0) at(tt + 0.25, () => sfx.warp());
+        if (!noSfx && k % 4 === 1) at(tt + 0.3, () => sfx.flip());
+        if (!noSfx && k % 5 === 2) at(tt + 0.3, () => sfx.gauntletClear());
+      }
+      if (scenario === 'course-stack') {
+        at(3, () => {
+          sfx.warp();
+          sfx.flip();
+          sfx.gauntletClear();
+          sfx.zoneEnter();
+          sfx.rankUp(6);
+          sfx.powerup('EMP');
+          sfx.overdriveStart();
+          sfx.perfectChain();
+          sfx.milestone(9);
+        });
+      }
+      if (!musicOnly) {
+        at(7, () => sfx.death());
+        at(7.2, () => sfx.boom());
+      }
     } else if (scenario === 'sfx' || scenario.startsWith('one-')) {
       // every effect on its own, 1.6 s apart, no music
       const list: (() => void)[] = [
@@ -345,6 +399,9 @@ async function render(scenario: string, seconds: number, tap: 'master' | 'mix' |
         () => sfx.zoneClear(),
         () => sfx.zoneBreak(),
         () => sfx.milestone(8),
+        () => sfx.warp(),
+        () => sfx.flip(),
+        () => sfx.gauntletClear(),
       ];
       if (scenario === 'sfx') {
         transport.start(0);

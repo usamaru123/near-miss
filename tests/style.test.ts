@@ -44,7 +44,8 @@ import {
 import type { Arc, GameEvent, GameState, Input } from '../src/game/types';
 
 const idle = (): Input => ({ move: 0, focus: false, overdrive: false });
-const types = (ev: GameEvent[]): string[] => ev.map((e) => e.type);
+// section events (a new notice / start can fall into any stretch of sim time) are not what these tests are about
+const types = (ev: GameEvent[]): string[] => ev.map((e) => e.type).filter((t) => !t.startsWith('section') && t !== 'biomeChange');
 
 /** A sim without obstacles, ON BEAT scoring and CLUTCH out of the way: only what each test sets up happens. */
 function fresh(): GameState {

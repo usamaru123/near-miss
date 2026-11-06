@@ -143,7 +143,7 @@ export class Afterimages {
     this.amt = 0;
   }
 
-  update(dt: number, theta: number, angVel: number, zone: number, flash: number): void {
+  update(dt: number, theta: number, angVel: number, zone: number, flash: number, rs = 1): void {
     this.time += dt;
     this.amt += (zone - this.amt) * (1 - Math.exp(-dt * 8));
     this.ht[this.hi] = this.time;
@@ -168,7 +168,7 @@ export class Afterimages {
         }
       }
       const th = best >= 0 ? this.hth[best] : theta;
-      mesh.position.set(Math.cos(th) * SHIP_RADIUS, Math.sin(th) * SHIP_RADIUS, 0.5 + i * 0.5);
+      mesh.position.set(Math.cos(th) * SHIP_RADIUS * rs, Math.sin(th) * SHIP_RADIUS * rs, 0.5 + i * 0.5);
       mesh.rotation.z = th + Math.PI / 2 - (angVel / MAX_ANG_VEL) * 0.5;
       hsl((this.time * 0.6 + i * 0.18) % 1, 1, 0.6, rgb);
       const g = 1.1 - i * 0.2;

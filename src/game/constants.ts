@@ -252,3 +252,69 @@ export const MILESTONE_FIRST_EXP = 5;
 export const BREAKDOWN_MIN = 10;
 /** Ghost depth: score difference per world unit is at least this fraction of the best's score at the same time. */
 export const GHOST_REL_PER_UNIT = 0.05;
+
+// --- course: biomes, sections, director (section 20) ---
+export const SECTION_NAMES = ['RANDOM', 'SPIRAL', 'ZIGZAG', 'PULSE', 'LASER', 'SPLIT', 'DARK', 'FLIP', 'BREATHER', 'GAUNTLET'] as const;
+export type SectionName = (typeof SECTION_NAMES)[number];
+/** First tier a section may appear in. */
+export const SECTION_MIN_TIER: Readonly<Record<SectionName, number>> = {
+  RANDOM: 1,
+  SPIRAL: 1,
+  ZIGZAG: 2,
+  PULSE: 2,
+  LASER: 3,
+  SPLIT: 2,
+  DARK: 4,
+  FLIP: 4,
+  BREATHER: 1,
+  GAUNTLET: 2,
+};
+export type SectionRole = 'build' | 'peak' | 'breather' | 'gauntlet';
+export const BEATS_PER_BAR = 4;
+export const BARS_PER_PHRASE = 8;
+/** The first section starts on this beat (bar-aligned, a little after FIRST_OBSTACLE_TIME). */
+export const FIRST_SECTION_BEAT = 8;
+export const GAUNTLET_BARS = 4;
+export const DIRECTOR_SEED_XOR = 0x5ec71a11;
+/** gapTime multiplier per role: never below 1 (the tier's design gap is the fairness floor). */
+export const ROLE_GAP_SCALE: Readonly<Record<SectionRole, number>> = { build: 1.25, peak: 1.05, breather: 2.1, gauntlet: 1 };
+/** Role cycle of the director (one section per entry); higher tiers raise the share of peaks. */
+export const ROLE_CYCLE_LOW: readonly SectionRole[] = ['build', 'build', 'peak', 'breather'];
+export const ROLE_CYCLE_HIGH: readonly SectionRole[] = ['build', 'peak', 'peak', 'peak', 'breather'];
+export const ROLE_CYCLE_HIGH_TIER = 4;
+export const GAUNTLET_CLEAR_SCORE = 2500;
+export const GAUNTLET_CLEAR_STYLE = 120;
+/** A section notice (banner) is raised this many beats before the section starts. */
+export const NOTICE_BEATS = 4;
+
+// PULSE_RING: the gap breathes with the beat and is fully open (>= SAFE_MIN_WIDTH) when the ring reaches the ship.
+export const PULSE_CLOSED_GAP = 8 * DEG;
+export const PULSE_MIN_OPEN = 36 * DEG;
+// LASER: thin arc sweeping round the tunnel, two beats long in z.
+export const LASER_WIDTH = 14 * DEG;
+export const LASER_BEATS = 2;
+export const LASER_OMEGA_MIN = 0.9;
+export const LASER_OMEGA_MAX = 2.4;
+/** Extra clearance around the swept sector (covers the sim's speed-vs-time rotation approximation). */
+export const LASER_MARGIN = 5 * DEG;
+export const LASER_MIN_SAFE_2BEAM = 46 * DEG;
+// SPLIT: wide safe route + narrow shard route.
+export const SPLIT_NARROW = SAFE_MIN_WIDTH + 6 * DEG;
+export const SPLIT_WIDE_EXTRA = 24 * DEG;
+
+export interface BiomeDef {
+  name: string;
+  /** cross-section: 'circle' | 'hex' | 'ngon9' | 'square' | 'pulse' (circle with a pulsing radius) | 'void' (circle, walls hidden) */
+  shape: 'circle' | 'hex' | 'ngon9' | 'square' | 'pulse' | 'void';
+}
+export const BIOMES: readonly BiomeDef[] = [
+  { name: 'NEON CITY', shape: 'circle' },
+  { name: 'HEX GRID', shape: 'hex' },
+  { name: 'CRYSTAL CAVE', shape: 'ngon9' },
+  { name: 'DATA STREAM', shape: 'square' },
+  { name: 'INFERNO', shape: 'pulse' },
+  { name: 'VOID', shape: 'void' },
+];
+/** Seconds the warp gate is visible before the tier-up. */
+export const WARP_LEAD = 1.0;
+export const FLIP_ROLL_TIME = 0.6;
