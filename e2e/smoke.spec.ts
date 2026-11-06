@@ -80,6 +80,16 @@ test('title -> play -> death -> retry, with no console errors', async ({ page })
   await page.waitForFunction(() => (window as unknown as { __NEARMISS__: { getState(): { powerups: number } } }).__NEARMISS__.getState().powerups === 0);
   expect((await getState(page)).alive).toBe(true);
 
+  // CLUTCH: the debug hook starts the time-freeze; it must run, resolve and score without errors
+  const sc0 = (await getState(page)).score;
+  await page.evaluate(() => (window as unknown as { __NEARMISS__: { triggerClutch(): void } }).__NEARMISS__.triggerClutch());
+  expect((await getState(page)).clutch).toBe(true);
+  await expect(page.locator('#clutch-tint.on')).toBeVisible();
+  await page.waitForFunction(() => !(window as unknown as { __NEARMISS__: { getState(): Record<string, unknown> } }).__NEARMISS__.getState().clutch, null, { timeout: 8000 });
+  expect((await getState(page)).alive).toBe(true);
+  expect((await getState(page)).score).toBeGreaterThan(sc0 + 2999);
+  await expect(page.locator('.popup.clutch:not(.off)')).toBeVisible();
+
   // pause / resume
   await page.keyboard.press('KeyP');
   await expect(page.locator('#pause')).toBeVisible();
@@ -104,6 +114,10 @@ test('title -> play -> death -> retry, with no console errors', async ({ page })
   expect(s2.alive).toBe(true);
   expect(s2.t).toBeGreaterThan(0);
   expect(s2.seed).not.toBe(4242);
+  // second run: the best run's ghost exists and the PB pace line is shown
+  expect(s2.hasGhost).toBe(true);
+  await expect(page.locator('#pace')).toBeVisible();
+  await expect(page.locator('#pace')).toHaveText(/^PB [+−]/);
 
   await page.screenshot({ path: 'test-results/play.png' });
   expect(problems, problems.join(String.fromCharCode(10))).toEqual([]);

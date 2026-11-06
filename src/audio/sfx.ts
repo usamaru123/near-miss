@@ -16,6 +16,7 @@ export class Sfx {
   private windSrc: Tone.Noise | null = null;
   private windFilter: Tone.Filter | null = null;
   private windGain: Tone.Gain | null = null;
+  private windHP: Tone.Filter | null = null;
   private pluck!: Tone.PolySynth;
   private bell!: Tone.PolySynth;
   private built = false;
@@ -23,13 +24,18 @@ export class Sfx {
 
   constructor(private readonly a: AudioEngine) {}
 
+  /** Build the persistent synths up front (load time). */
+  prepare(): void {
+    if (!this.built) this.build();
+  }
+
   private build(): void {
     this.built = true;
     const a = this.a;
     this.pluck = new Tone.PolySynth(Tone.Synth, {
       oscillator: { type: 'triangle' },
-      envelope: { attack: 0.001, decay: 0.16, sustain: 0, release: 0.08 },
-      volume: -9,
+      envelope: { attack: 0.003, decay: 0.16, sustain: 0, release: 0.08 },
+      volume: -11,
     });
     this.pluck.maxPolyphony = 24;
     this.pluck.connect(a.sfx);
@@ -39,15 +45,26 @@ export class Sfx {
     this.bell = new Tone.PolySynth(Tone.FMSynth, {
       harmonicity: 3.01,
       modulationIndex: 6,
-      envelope: { attack: 0.001, decay: 0.5, sustain: 0, release: 0.3 },
-      modulationEnvelope: { attack: 0.001, decay: 0.3, sustain: 0, release: 0.2 },
-      volume: -16,
+      envelope: { attack: 0.003, decay: 0.5, sustain: 0, release: 0.3 },
+      modulationEnvelope: { attack: 0.003, decay: 0.3, sustain: 0, release: 0.2 },
+      volume: -18,
     });
-    this.bell.maxPolyphony = 24;
+    this.bell.maxPolyphony = 20;
     this.bell.connect(a.sfx);
     const sendB = new Tone.Gain(0.5);
     this.bell.connect(sendB);
     sendB.connect(a.sendNode);
+  }
+
+  /** Run `fn` with every sound it triggers trimmed by `level` (keeps each effect's peak in its mix slot). */
+  private scoped(level: number, fn: () => void): void {
+    const prev = this.a.level;
+    this.a.level = prev * level;
+    try {
+      fn();
+    } finally {
+      this.a.level = prev;
+    }
   }
 
   private get ok(): boolean {
@@ -62,9 +79,12 @@ export class Sfx {
   startWind(): void {
     if (!this.ok || this.windSrc) return;
     const n = new Tone.Noise('pink');
-    const f = new Tone.Filter({ type: 'bandpass', frequency: 300, Q: 0.7 });
+    // no wind below 600 Hz: it only adds rumble
+    const hp = new Tone.Filter({ type: 'highpass', frequency: 600, rolloff: -24 });
+    const f = new Tone.Filter({ type: 'bandpass', frequency: 900, Q: 0.7 });
     const g = new Tone.Gain(0);
-    n.chain(f, g, this.a.sfx);
+    n.chain(hp, f, g, this.a.sfx);
+    this.windHP = hp;
     n.start();
     this.windSrc = n;
     this.windFilter = f;
@@ -73,7 +93,7 @@ export class Sfx {
 
   updateWind(speedFrac: number, overdrive: boolean, nitro = false): void {
     if (!this.windFilter || !this.windGain) return;
-    this.windFilter.frequency.rampTo(280 + speedFrac * 2600 + (overdrive ? 1400 : 0) + (nitro ? 900 : 0), 0.1);
+    this.windFilter.frequency.rampTo(900 + speedFrac * 2400 + (overdrive ? 1400 : 0) + (nitro ? 900 : 0), 0.1);
     this.windGain.gain.rampTo(0.05 + speedFrac * 0.26 + (overdrive ? 0.16 : 0) + (nitro ? 0.08 : 0), 0.1);
   }
 
@@ -81,6 +101,8 @@ export class Sfx {
     const n = this.windSrc;
     const g = this.windGain;
     const f = this.windFilter;
+    const hp = this.windHP;
+    this.windHP = null;
     if (!n || !g || !f) return;
     this.windSrc = null;
     this.windGain = null;
@@ -91,6 +113,7 @@ export class Sfx {
         n.stop();
         n.dispose();
         f.dispose();
+        hp?.dispose();
         g.dispose();
       } catch {
         /* disposed */
@@ -101,7 +124,7 @@ export class Sfx {
   // ------------------------------------------------------------------ passes / near misses
 
   /** Doppler-style pass-by: pitch falls as the obstacle passes, panned to its side. */
-  whoosh(pan: number, speedFrac: number): void {
+  private _whoosh(pan: number, speedFrac: number): void {
     if (!this.ok) return;
     const a = this.a;
     const t = a.now;
@@ -113,7 +136,7 @@ export class Sfx {
     });
   }
 
-  nearMiss(dist = NEAR_DIST * 0.5, pan = 0): void {
+  private _nearMiss(dist = NEAR_DIST * 0.5, pan = 0): void {
     if (!this.ok) return;
     const a = this.a;
     const t = a.now;
@@ -163,7 +186,7 @@ export class Sfx {
     for (let i = 0; i < 9; i++) {
       const f = a5(PENTA[i % PENTA.length] + (i >= 6 ? 12 : 0));
       this.pluck.triggerAttackRelease(f, 0.14, t + i * 0.045, 0.85);
-      this.bell.triggerAttackRelease(f * 2, 0.4, t + i * 0.045 + 0.01, 0.5);
+      if (i % 2 === 0) this.bell.triggerAttackRelease(f * 2, 0.4, t + i * 0.045 + 0.01, 0.5);
     }
     if (!a.play('coin', { time: t, db: 4, rate: 0.9, send: 0.3 })) a.osc({ time: t, type: 'square', f0: 1200, f1: 1800, dur: 0.12, peak: 0.12 });
     a.noise({ time: t + 0.1, dur: 0.6, type: 'highpass', f0: 7000, q: 0.5, peak: 0.1, attack: 0.15, send: 0.3 });
@@ -200,7 +223,7 @@ export class Sfx {
   }
 
   /** Jet ignition: whoosh of flame, ramping turbine. */
-  private nitroUp(): void {
+  private _nitroUp(): void {
     const a = this.a;
     const t = a.now;
     a.noise({ time: t, dur: 0.7, type: 'lowpass', f0: 300, f1: 9500, q: 0.8, peak: 0.55, attack: 0.08, send: 0.15 });
@@ -225,7 +248,7 @@ export class Sfx {
   }
 
   /** Time stretching: a reversed swell and a falling, widening tone. */
-  private warpUp(): void {
+  private _warpUp(): void {
     const a = this.a;
     const t = a.now;
     if (!a.play('fxWarp', { time: t, db: 6, reverse: true, rate: 0.9, send: 0.4, pan: -0.2 })) {
@@ -237,7 +260,7 @@ export class Sfx {
   }
 
   /** Deep drop and a shockwave. */
-  private empBlast(): void {
+  private _empBlast(): void {
     const a = this.a;
     const t = a.now;
     if (!a.play('subDrop', { time: t, db: 3 })) a.osc({ time: t, type: 'sine', f0: 100, f1: 26, dur: 1.2, peak: 0.9, attack: 0.004 });
@@ -250,7 +273,7 @@ export class Sfx {
   }
 
   /** Glass shatter with a low thud. */
-  shieldBreak(): void {
+  private _shieldBreak(): void {
     if (!this.ok) return;
     const a = this.a;
     const t = a.now;
@@ -265,7 +288,7 @@ export class Sfx {
   }
 
   /** EMP shockwave as seen from the event (the pick-up sound already carries the drop). */
-  emp(): void {
+  private _emp(): void {
     if (!this.ok) return;
     const a = this.a;
     const t = a.now + 0.05;
@@ -276,7 +299,7 @@ export class Sfx {
 
   // ------------------------------------------------------------------ big moments
 
-  overdriveStart(): void {
+  private _overdriveStart(): void {
     if (!this.ok) return;
     const a = this.a;
     const t = a.now;
@@ -301,7 +324,7 @@ export class Sfx {
   }
 
   /** Metal and rubble impact. */
-  smash(): void {
+  private _smash(): void {
     if (!this.ok) return;
     const a = this.a;
     const t = a.now;
@@ -318,7 +341,7 @@ export class Sfx {
   }
 
   /** Explosion, metal shards, sub boom. (The tape stop is the music's job.) */
-  death(): void {
+  private _death(): void {
     if (!this.ok) return;
     const a = this.a;
     const t = a.now;
@@ -338,7 +361,7 @@ export class Sfx {
   }
 
   /** Sonic boom for speed milestones. */
-  boom(): void {
+  private _boom(): void {
     if (!this.ok) return;
     const a = this.a;
     const t = a.now;
@@ -351,7 +374,7 @@ export class Sfx {
   }
 
   /** Launch boost on GO. */
-  launch(): void {
+  private _launch(): void {
     if (!this.ok) return;
     const a = this.a;
     const t = a.now;
@@ -367,11 +390,13 @@ export class Sfx {
     const a = this.a;
     const t = a.now;
     if (final) {
+      a.level *= 0.65;
       a.osc({ time: t, type: 'square', f0: 1320, dur: 0.45, peak: 0.2, attack: 0.004, dest: a.ui });
       a.osc({ time: t, type: 'sawtooth', f0: 660, dur: 0.45, peak: 0.14, attack: 0.004, dest: a.ui });
       a.play('kickHeavy', { time: t, db: 0 });
       a.play('crash', { time: t, db: 6, send: 0.2 });
       a.play('uiBeep', { time: t, db: 6, rate: 1.5, dest: a.ui });
+      a.level /= 0.65;
     } else {
       a.osc({ time: t, type: 'square', f0: 660, dur: 0.2, peak: 0.2, attack: 0.004, dest: a.ui });
       a.play('uiBeep', { time: t, db: 2, rate: 1, dest: a.ui, send: 0.1 });
@@ -391,7 +416,8 @@ export class Sfx {
 
   /** Lub-dub, two sub thumps. Louder and fatter during FOCUS. */
   heart(loud: boolean): void {
-    if (!this.ok) return;
+    // the steady heartbeat loop was a constant low thump: it only sounds in FOCUS / CLUTCH now
+    if (!loud || !this.ok) return;
     const a = this.a;
     const t = a.now;
     if (t - this.lastHeart < 0.15) return;
@@ -402,9 +428,124 @@ export class Sfx {
     if (loud) a.osc({ time: t, type: 'triangle', f0: 124, f1: 80, dur: 0.1, peak: 0.25, attack: 0.003, dest: a.heart });
   }
 
+  /** ON BEAT: a bright punch layered on the kick (high enough not to add low-end). */
+  beatAccent(strong: boolean): void {
+    if (!this.ok) return;
+    const a = this.a;
+    const t = a.now;
+    a.osc({ time: t, type: 'sine', f0: 190, f1: 90, dur: 0.07, peak: strong ? 0.4 : 0.3, attack: 0.003, dest: a.ui });
+    a.noise({ time: t, dur: 0.04, type: 'highpass', f0: 3500, q: 0.7, peak: 0.2, attack: 0.003, dest: a.ui });
+    a.play('uiBlip', { time: t, db: 3, rate: strong ? 1.8 : 1.5, dest: a.ui });
+  }
+
+  /** BEAT STREAK bonus: a quick rising arpeggio. */
+  beatStreak(): void {
+    if (!this.ok) return;
+    const a = this.a;
+    const t = a.now;
+    [0, 4, 7, 12].forEach((semi, i) => this.pluck.triggerAttackRelease(a5(semi + 12), 0.1, t + i * 0.05, 0.8));
+    this.bell.triggerAttackRelease(a5(24), 0.4, t + 0.2, 0.6);
+  }
+
+  /** CLUTCH start: time stops (reverse swell, falling tone) over a muffled mix. */
+  clutchStart(): void {
+    if (!this.ok) return;
+    const a = this.a;
+    const t = a.now;
+    a.play('fxWarp', { time: t, db: 4, reverse: true, rate: 1.2, dur: 0.45, fade: 0.1, send: 0.4 });
+    a.osc({ time: t, type: 'sine', f0: 1400, f1: 180, dur: 0.5, peak: 0.22, attack: 0.01, send: 0.5 });
+    a.noise({ time: t, dur: 0.4, type: 'bandpass', f0: 3000, f1: 300, q: 2, peak: 0.12, attack: 0.05, send: 0.3 });
+  }
+
+  /** CLUTCH success: time snaps back with a big hit. */
+  clutchSuccess(): void {
+    if (!this.ok) return;
+    const a = this.a;
+    const t = a.now;
+    a.play('crashBig', { time: t, db: 2, send: 0.3, dur: 1.2, fade: 0.4 });
+    a.play('smashImpact', { time: t, db: 1, rate: 0.9 });
+    a.noise({ time: t, dur: 0.5, type: 'bandpass', f0: 500, f1: 9000, q: 1.2, peak: 0.4, attack: 0.01, send: 0.2 });
+    [0, 7, 12, 16, 19].forEach((semi, i) => {
+      this.pluck.triggerAttackRelease(a5(semi), 0.14, t + 0.04 + i * 0.05, 0.9);
+      this.bell.triggerAttackRelease(a5(semi + 12), 0.5, t + 0.04 + i * 0.05, 0.6);
+    });
+  }
+
+  /** Short fanfare for OVERTAKE!. */
+  overtake(): void {
+    if (!this.ok) return;
+    const a = this.a;
+    const t = a.now;
+    [0, 5, 9, 12].forEach((semi, i) => this.pluck.triggerAttackRelease(a5(semi), 0.12, t + i * 0.06, 0.9));
+    a.play('coin', { time: t + 0.12, db: 2, rate: 1.1, send: 0.25 });
+  }
+
+  /** Bigger fanfare for the live NEW RECORD. */
+  newRecord(): void {
+    if (!this.ok) return;
+    const a = this.a;
+    const t = a.now;
+    [0, 4, 7, 12, 16, 19, 24].forEach((semi, i) => {
+      this.pluck.triggerAttackRelease(a5(semi), 0.16, t + i * 0.07, 0.9);
+      this.bell.triggerAttackRelease(a5(semi + 12), 0.6, t + i * 0.07, 0.6);
+    });
+    a.play('crash', { time: t, db: 2, send: 0.3, dur: 1.4, fade: 0.5 });
+    a.play('coin', { time: t + 0.1, db: 4, rate: 0.95, send: 0.3 });
+  }
+
   blip(high = false): void {
     if (!this.ok) return;
     const a = this.a;
     a.osc({ type: 'square', f0: high ? 1320 : 660, f1: high ? 1760 : 990, dur: 0.09, peak: 0.12, dest: a.ui });
+  }
+
+  // ---- level-trimmed entry points ----
+
+  nearMiss(dist = NEAR_DIST * 0.5, pan = 0): void {
+    this.scoped(0.6, () => this._nearMiss(dist, pan));
+  }
+
+  whoosh(pan: number, speedFrac: number): void {
+    this.scoped(0.8, () => this._whoosh(pan, speedFrac));
+  }
+
+  private nitroUp(): void {
+    this.scoped(0.55, () => this._nitroUp());
+  }
+
+  private warpUp(): void {
+    this.scoped(0.85, () => this._warpUp());
+  }
+
+  private empBlast(): void {
+    this.scoped(0.45, () => this._empBlast());
+  }
+
+  emp(): void {
+    this.scoped(0.6, () => this._emp());
+  }
+
+  shieldBreak(): void {
+    this.scoped(0.7, () => this._shieldBreak());
+  }
+
+  overdriveStart(): void {
+    this.scoped(0.4, () => this._overdriveStart());
+  }
+
+  smash(): void {
+    this.scoped(0.55, () => this._smash());
+  }
+
+  death(): void {
+    this.scoped(0.25, () => this._death());
+  }
+
+  boom(): void {
+    this.scoped(0.5, () => this._boom());
+  }
+
+  launch(): void {
+    this.scoped(0.8, () => this._launch());
   }
 }

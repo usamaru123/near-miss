@@ -20,6 +20,9 @@ const idle = (): Input => ({ move: 0, focus: false, overdrive: false });
 function fresh(): GameState {
   const s = createState(1);
   s.spawnEnabled = false;
+  // the legacy tests below predate beat scoring and CLUTCH: keep both out of the way
+  s.beatBonus = false;
+  s.clutch.lastStart = 0; // on cooldown for the first 8 s
   return s;
 }
 

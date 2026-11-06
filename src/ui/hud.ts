@@ -24,7 +24,7 @@ function retrigger(e: HTMLElement, cls: string): void {
 }
 
 const FLOATERS = 8;
-const POPUPS = 4;
+const POPUPS = 6;
 const MAX_VISIBLE_POPUPS = 3;
 const STREAKS = 72;
 
@@ -116,6 +116,9 @@ export class Hud {
   private readonly vignette = el('vignette');
   private readonly flashEl = el('flash');
   private readonly tint = el('focus-tint');
+  private readonly clutchTint = el('clutch-tint');
+  private readonly paceEl = el('pace');
+  private lastPace = '';
   private readonly floaters: HTMLElement[] = [];
   private readonly streaks = new StreakField();
   private readonly countdownEl = el('countdown');
@@ -223,6 +226,7 @@ export class Hud {
     const v = (speedFrac * speedFrac * 0.4 + (s.overdrive ? 0.35 : 0)) * pulse * (0.5 + 0.5 * this.flashScale);
     this.vignette.style.opacity = v.toFixed(3);
     this.tint.style.opacity = (focusAmt * 0.85).toFixed(3);
+    this.clutchTint.classList.toggle('on', s.clutch.active);
     this.setEffect('SHIELD', s.shield ? 100 : -1);
     this.setEffect('NITRO', s.nitroT > 0 ? (s.nitroT / NITRO_DURATION) * 100 : -1);
     this.setEffect('DOUBLE', s.doubleT > 0 ? (s.doubleT / DOUBLE_DURATION) * 100 : -1);
@@ -259,8 +263,29 @@ export class Hud {
     el.classList.add('show');
   }
 
+  /** PB pace line under the score: green when ahead of the best, red when behind. null hides it. */
+  setPace(diff: number | null): void {
+    if (diff === null) {
+      if (this.lastPace !== '') {
+        this.lastPace = '';
+        this.paceEl.classList.add('hidden');
+      }
+      return;
+    }
+    const d = Math.round(diff);
+    const text = 'PB ' + (d >= 0 ? '+' : '−') + Math.abs(d).toLocaleString('en-US');
+    if (text === this.lastPace) return;
+    this.lastPace = text;
+    this.paceEl.textContent = text;
+    this.paceEl.classList.remove('hidden');
+    this.paceEl.classList.toggle('up', d >= 0);
+    this.paceEl.classList.toggle('down', d < 0);
+  }
+
   clearPopups(): void {
     for (const p of this.popups) p.classList.add('off');
+    this.setPace(null);
+    this.clutchTint.classList.remove('on');
   }
 
   itemPopup(text: string, color: string): void {

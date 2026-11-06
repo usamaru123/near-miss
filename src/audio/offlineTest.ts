@@ -9,7 +9,28 @@ import { createBank } from './bank';
 import { Music } from './music';
 import { Sfx } from './sfx';
 
+export interface LowEnd {
+  kicks: number;
+  kickPeak: number;
+  /** RMS below 120 Hz outside the 150 ms after each kick, dB re kick peak */
+  rmsOutsideKickDb: number;
+  /** RMS below 120 Hz from 200 ms after each kick to the next kick, dB re kick peak */
+  tailRmsDb: number;
+  /** same metric, worst single beat */
+  worstTailDb: number;
+  /** per-second low-band RMS (dB re kick peak), whole signal */
+  perSecond: number[];
+  /** mean low-band RMS (dB re kick peak) by 25 ms bin after the kick */
+  profile: number[];
+}
+
 export interface Stats {
+  tap: string;
+  maxDelta: number;
+  /** max adjacent-sample delta divided by the local (+-64 sample) RMS: > ~6 marks a click in non-noise material */
+  maxDeltaRatio: number;
+  deltaOver03: number;
+  lowEnd: LowEnd | null;
   scenario: string;
   seconds: number;
   peak: number;
@@ -17,36 +38,162 @@ export interface Stats {
   rmsDb: number;
   clipped: number;
   perSecondRmsDb: number[];
+  perSecondPeakDb: number[];
   failedSamples: string[];
 }
 
 const db = (v: number): number => 20 * Math.log10(Math.max(1e-9, v));
 
-function analyse(buf: AudioBuffer, scenario: string, failed: string[]): Stats {
+/** 2nd-order Butterworth low-pass, applied twice (24 dB/oct). */
+function lowpass120(x: Float32Array, sr: number): Float32Array {
+  const w0 = (2 * Math.PI * 120) / sr;
+  const alpha = Math.sin(w0) / Math.SQRT2;
+  const c = Math.cos(w0);
+  const b0 = (1 - c) / 2;
+  const b1 = 1 - c;
+  const b2 = (1 - c) / 2;
+  const a0 = 1 + alpha;
+  const a1 = -2 * c;
+  const a2 = 1 - alpha;
+  let cur = x;
+  for (let pass = 0; pass < 2; pass++) {
+    const y = new Float32Array(cur.length);
+    let x1 = 0;
+    let x2 = 0;
+    let y1 = 0;
+    let y2 = 0;
+    for (let i = 0; i < cur.length; i++) {
+      const xi = cur[i];
+      const yi = (b0 * xi + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2) / a0;
+      y[i] = yi;
+      x2 = x1;
+      x1 = xi;
+      y2 = y1;
+      y1 = yi;
+    }
+    cur = y;
+  }
+  return cur;
+}
+
+function lowEnd(buf: AudioBuffer, kicks: number[]): LowEnd | null {
+  if (kicks.length < 4) return null;
+  const sr = buf.sampleRate;
+  const mono = new Float32Array(buf.length);
+  for (let c = 0; c < buf.numberOfChannels; c++) {
+    const d = buf.getChannelData(c);
+    for (let i = 0; i < d.length; i++) mono[i] += d[i] / buf.numberOfChannels;
+  }
+  const lp = lowpass120(mono, sr);
+  const ks = kicks.filter((k) => k > 0.5 && k < buf.duration - 0.6).sort((a, b) => a - b);
+  let peak = 0;
+  for (const k of ks) for (let i = Math.floor(k * sr); i < Math.floor((k + 0.12) * sr) && i < lp.length; i++) peak = Math.max(peak, Math.abs(lp[i]));
+  const inKick = new Uint8Array(lp.length);
+  for (const k of ks) for (let i = Math.floor(k * sr); i < Math.floor((k + 0.15) * sr) && i < lp.length; i++) inKick[i] = 1;
+  let ss = 0;
+  let n = 0;
+  const from = Math.floor(ks[0] * sr);
+  const to = Math.floor((ks[ks.length - 1] + 0.15) * sr);
+  for (let i = from; i < to && i < lp.length; i++) {
+    if (inKick[i]) continue;
+    ss += lp[i] * lp[i];
+    n++;
+  }
+  let ts = 0;
+  let tn = 0;
+  let worst = -200;
+  for (let j = 0; j + 1 < ks.length; j++) {
+    let bs = 0;
+    let bn = 0;
+    for (let i = Math.floor((ks[j] + 0.2) * sr); i < Math.floor(ks[j + 1] * sr) && i < lp.length; i++) {
+      bs += lp[i] * lp[i];
+      bn++;
+    }
+    ts += bs;
+    tn += bn;
+    if (bn > 0) worst = Math.max(worst, db(Math.sqrt(bs / bn) / peak));
+  }
+  return {
+    kicks: ks.length,
+    kickPeak: peak,
+    rmsOutsideKickDb: Math.round(db(Math.sqrt(ss / Math.max(1, n)) / peak) * 10) / 10,
+    tailRmsDb: Math.round(db(Math.sqrt(ts / Math.max(1, tn)) / peak) * 10) / 10,
+    worstTailDb: Math.round(worst * 10) / 10,
+    profile: Array.from({ length: 14 }, (_, b) => {
+      let q = 0;
+      let cnt = 0;
+      for (const k of ks) {
+        for (let i = Math.floor((k + b * 0.025) * sr); i < Math.floor((k + (b + 1) * 0.025) * sr) && i < lp.length; i++) {
+          q += lp[i] * lp[i];
+          cnt++;
+        }
+      }
+      return Math.round(db(Math.sqrt(q / Math.max(1, cnt)) / peak) * 10) / 10;
+    }),
+    perSecond: Array.from({ length: Math.floor(lp.length / sr) }, (_, k) => {
+      let q = 0;
+      for (let i = k * sr; i < (k + 1) * sr; i++) q += lp[i] * lp[i];
+      return Math.round(db(Math.sqrt(q / sr) / peak) * 10) / 10;
+    }),
+  };
+}
+
+function analyse(buf: AudioBuffer, scenario: string, failed: string[], tap: string, kicks: number[]): Stats {
   const sr = buf.sampleRate;
   let peak = 0;
   let sum = 0;
   let n = 0;
   let clipped = 0;
   const per: number[] = [];
+  const perPk: number[] = [];
   const chans = [...Array(buf.numberOfChannels).keys()].map((c) => buf.getChannelData(c));
   const secs = Math.floor(buf.length / sr);
   for (let s = 0; s < secs; s++) {
     let ss = 0;
+    let spk = 0;
     for (const d of chans) {
       for (let i = s * sr; i < (s + 1) * sr; i++) {
         const v = d[i];
         const a = Math.abs(v);
         if (a > peak) peak = a;
+        if (a > spk) spk = a;
         if (a >= 0.999) clipped++;
         ss += v * v;
       }
     }
+    perPk.push(Math.round(db(spk) * 10) / 10);
     sum += ss;
     n += sr * chans.length;
     per.push(Math.round(db(Math.sqrt(ss / (sr * chans.length))) * 10) / 10);
   }
+  let maxDelta = 0;
+  let over = 0;
+  for (const d of chans) {
+    for (let i = 1; i < d.length; i++) {
+      const dd = Math.abs(d[i] - d[i - 1]);
+      if (dd > maxDelta) maxDelta = dd;
+      if (dd > 0.3) over++;
+    }
+  }
+  let ratio = 0;
+  {
+    const d = chans[0];
+    const W = 64;
+    let acc = 0;
+    for (let i = 0; i < Math.min(W, d.length); i++) acc += d[i] * d[i];
+    for (let i = W + 1; i < d.length - W; i++) {
+      acc += d[i + W] * d[i + W] - d[i - W - 1] * d[i - W - 1];
+      const rms = Math.sqrt(Math.max(0, acc) / (2 * W + 1));
+      const dd = Math.abs(d[i] - d[i - 1]);
+      if (dd > 0.02) ratio = Math.max(ratio, dd / (rms + 1e-3));
+    }
+  }
   return {
+    tap,
+    maxDeltaRatio: Math.round(ratio * 10) / 10,
+    maxDelta: Math.round(maxDelta * 1000) / 1000,
+    deltaOver03: over,
+    lowEnd: lowEnd(buf, kicks),
     scenario,
     seconds: buf.length / sr,
     peak,
@@ -54,38 +201,50 @@ function analyse(buf: AudioBuffer, scenario: string, failed: string[]): Stats {
     rmsDb: Math.round(db(Math.sqrt(sum / Math.max(1, n))) * 10) / 10,
     clipped,
     perSecondRmsDb: per,
+    perSecondPeakDb: perPk,
     failedSamples: failed,
   };
 }
 
-async function render(scenario: string, seconds: number): Promise<Stats> {
+async function render(scenario: string, seconds: number, tap: 'master' | 'mix' | 'limiterIn' = 'master'): Promise<Stats> {
   let failed: string[] = [];
+  const kicks: number[] = [];
   const buf = await Tone.Offline(async ({ transport }) => {
     const bank = createBank();
     await bank.loadAll();
     const eng = new AudioEngine(bank);
+    eng.offline = true;
+    eng.tap = tap;
+    eng.vol.master = 1;
     eng.build();
     eng.forceRunning = true;
     await eng.reverbReady();
     failed = [...eng.bank.failed];
     const music = new Music(eng);
+    music.onKick = (t) => kicks.push(t);
     const sfx = new Sfx(eng);
     const octx = Tone.getContext();
     const at = (t: number, fn: () => void): void => {
-      transport.schedule(() => {
+      transport.schedule((cbTime: number) => {
         const prev = Tone.getContext();
         if (prev !== octx) Tone.setContext(octx);
         try {
+          eng.timeOverride = cbTime;
           fn();
         } catch (err) {
           console.error('scenario step failed', String(err));
         }
+        eng.timeOverride = null;
       }, t);
     };
-    const tierMatch = /^bgm-t(\d)(-od)?$/.exec(scenario);
+    const tierMatch = /^bgm-t([0-9])(-od|-nop)?$/.exec(scenario);
     if (tierMatch) {
-      music.start(Number(tierMatch[1]));
-      if (tierMatch[2]) at(1.5, () => music.setOverdrive(true));
+      // the BGM tempo at the start of that tier (continuous BPM: 140 + (speed - 50) x 45 / 130)
+      const tierN = Number(tierMatch[1]);
+      const sp = Math.min(180, 50 + 1.4 * 25 * (tierN - 1));
+      music.start(tierN, 140 + ((sp - 50) * 45) / 130);
+      if (tierMatch[2] === '-od') music.setOverdrive(true);
+      if (tierMatch[2] === '-nop') at(1.5, () => undefined);
     } else if (scenario === 'title') {
       music.startTitle();
     } else if (scenario === 'drop') {
@@ -137,7 +296,7 @@ async function render(scenario: string, seconds: number): Promise<Stats> {
       ];
       if (scenario === 'sfx') {
         transport.start(0);
-        list.forEach((fn, i) => at(0.2 + i * 1.6, fn));
+        list.forEach((fn, i) => at(0.2 + i * 2.2, fn));
       } else {
         list[Number(scenario.slice(4))]();
       }
@@ -146,13 +305,15 @@ async function render(scenario: string, seconds: number): Promise<Stats> {
       // music scenarios already started the transport; make sure
     }
   }, seconds, 2, 44100);
-  return analyse(buf.get() as AudioBuffer, scenario, failed);
+  return analyse(buf.get() as AudioBuffer, scenario, failed, tap, kicks);
 }
 
 declare global {
   interface Window {
-    runOffline: (scenario: string, seconds: number) => Promise<Stats>;
+    runOffline: (scenario: string, seconds: number, tap?: 'master' | 'mix' | 'limiterIn') => Promise<Stats>;
+    runOfflineTap: (scenario: string, seconds: number, tap?: 'master' | 'mix' | 'limiterIn') => Promise<Stats>;
   }
 }
 window.runOffline = render;
+window.runOfflineTap = render;
 document.title = 'ready';

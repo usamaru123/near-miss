@@ -112,7 +112,7 @@ function makeChain(sp: SpawnerState, o: Obstacle): boolean {
   const chainId = sp.nextChainId++;
   const made: Shard[] = [];
   for (let k = 0; k < n; k++) {
-    const pos = distAt(o.tNom + (k - (n - 1) / 2) * SHARD_SPACING_TIME);
+    const pos = distAt(o.tNom + (k - (n - 1) / 2) * SHARD_SPACING_TIME) + sp.dOff;
     // never inside a solid, with a visual margin
     if (solidClearance(sp.recent, pos, thetas[k]) < SHARD_CLEARANCE) return false;
     made.push({ id: 0, chainId, idx: k, chainLen: n, anchorId: o.id, pos, theta: thetas[k], z: 0, done: false });

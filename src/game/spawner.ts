@@ -26,7 +26,7 @@ import {
   TAU,
 } from './constants';
 import { updateItems } from './items';
-import { distAt, gapTime, gapWidth, spinnerOmegaMax, tierAt } from './difficulty';
+import { distAt, gapTime, gapWidth, quantizeGapBeat, spinnerOmegaMax, tierAt, timeAtBeat } from './difficulty';
 import { Rng } from './rng';
 import type { Arc, Obstacle, ObstacleKind, SpawnerState } from './types';
 
@@ -47,7 +47,7 @@ export function reachDistance(gt: number): number {
   return REACH_FACTOR * MAX_ANG_VEL * gt;
 }
 
-export function createSpawner(seed: number, itemsEnabled = true): SpawnerState {
+export function createSpawner(seed: number, itemsEnabled = true, dOff = 0): SpawnerState {
   const itemRng = new Rng((seed ^ ITEM_SEED_XOR) >>> 0);
   return {
     rng: new Rng(seed),
@@ -62,6 +62,8 @@ export function createSpawner(seed: number, itemsEnabled = true): SpawnerState {
     shardQ: [],
     powerQ: [],
     tNom: 0,
+    beat: 0,
+    dOff,
     nextId: 1,
     // The ship starts (and idles) at START_THETA.
     prevSafe: [{ a: START_THETA, b: START_THETA }],
@@ -74,7 +76,7 @@ export function makeObstacle(
   kind: ObstacleKind,
   pos: number,
   solids: Arc[],
-  extra: { omega?: number; rotHit?: number; tNom?: number; dtPrev?: number; tier?: number } = {},
+  extra: { omega?: number; rotHit?: number; tNom?: number; beat?: number; dtPrev?: number; tier?: number } = {},
 ): Obstacle {
   const rotHit = extra.rotHit ?? 0;
   return {
@@ -82,6 +84,7 @@ export function makeObstacle(
     kind,
     pos,
     tNom: extra.tNom ?? 0,
+    beat: extra.beat ?? 0,
     dtPrev: extra.dtPrev ?? 0,
     tier: extra.tier ?? 1,
     thickness: OBSTACLE_THICK,
@@ -206,11 +209,29 @@ function generate(rng: Rng, kind: ObstacleKind, tier: number, anchor: number | n
   }
 }
 
-function chainValid(prevSafe: Arc[], cands: Cand[], gt: number): boolean {
+/**
+ * Beat-grid placement of a candidate chain starting after `beat0`: beat of each obstacle and the real time
+ * gap to its predecessor. (Design gaps are quantised to 0.5 beats, never below 0.9 x the design time.)
+ */
+function plan(beat0: number, cands: Cand[], gt: number, beats: number[], dts: number[]): void {
+  let b = beat0;
+  for (let i = 0; i < cands.length; i++) {
+    const nb = quantizeGapBeat(b, gt * cands[i].dtFactor);
+    beats[i] = nb;
+    dts[i] = timeAtBeat(nb) - timeAtBeat(b);
+    b = nb;
+  }
+}
+
+function chainValid(prevSafe: Arc[], cands: Cand[], beat0: number, gt: number): boolean {
+  const beats: number[] = [];
+  const dts: number[] = [];
+  plan(beat0, cands, gt, beats, dts);
   let prev = prevSafe;
-  for (const c of cands) {
+  for (let i = 0; i < cands.length; i++) {
+    const c = cands[i];
     for (const s of c.safe) if (arcLen(s.a, s.b) < SAFE_MIN_WIDTH) return false;
-    const r = reachDistance(gt * c.dtFactor) - REACH_EPS;
+    const r = reachDistance(dts[i]) - REACH_EPS;
     if (maxReachDistance(prev, c.safe, SAMPLE_STEP) > r) return false;
     prev = c.safe;
   }
@@ -227,19 +248,19 @@ function generateChain(sp: SpawnerState, tier: number, gt: number): Cand[] {
   const rng = sp.rng;
   for (let i = 0; i < SPAWN_RETRIES; i++) {
     const cands = generate(rng, pickKind(rng, tier), tier, null, gt);
-    if (chainValid(sp.prevSafe, cands, gt)) return cands;
+    if (chainValid(sp.prevSafe, cands, sp.beat, gt)) return cands;
   }
   // Fallback 1: pull the gap toward the previous safe zone.
   const anchor = widestCenter(sp.prevSafe);
   for (const kind of ['GAP_RING', 'SNAKE'] as ObstacleKind[]) {
     if (kind === 'SNAKE' && tier < 3) continue;
     const cands = generate(rng, kind, tier, anchor, gt);
-    if (chainValid(sp.prevSafe, cands, gt)) return cands;
+    if (chainValid(sp.prevSafe, cands, sp.beat, gt)) return cands;
   }
   // Fallback 2: a slab is always reachable (worst case 50deg away vs >= 92deg reach).
   for (let i = 0; i < 24; i++) {
     const c = genSlab(rng, null);
-    if (chainValid(sp.prevSafe, [c], gt)) return [c];
+    if (chainValid(sp.prevSafe, [c], sp.beat, gt)) return [c];
   }
   const c = genSlab(rng, anchor);
   c.solids = [{ a: wrap(anchor + Math.PI - SLAB_MIN / 2), b: wrap(anchor + Math.PI + SLAB_MIN / 2) }];
@@ -264,14 +285,19 @@ function generateMore(sp: SpawnerState): void {
   const gt = first ? FIRST_OBSTACLE_TIME : gapTime(tierAt(sp.tNom));
   const tier = tierAt(sp.tNom + gt);
   const cands = generateChain(sp, tier, gt);
-  for (const c of cands) {
-    const dt = gt * c.dtFactor;
-    sp.tNom += dt;
-    const o = makeObstacle(sp.nextId++, c.kind, distAt(sp.tNom), c.solids, {
+  const beats: number[] = [];
+  const dts: number[] = [];
+  plan(sp.beat, cands, gt, beats, dts);
+  for (let i = 0; i < cands.length; i++) {
+    const c = cands[i];
+    sp.beat = beats[i];
+    sp.tNom = timeAtBeat(sp.beat);
+    const o = makeObstacle(sp.nextId++, c.kind, distAt(sp.tNom) + sp.dOff, c.solids, {
       omega: c.omega,
       rotHit: c.rotHit,
       tNom: sp.tNom,
-      dtPrev: dt,
+      beat: sp.beat,
+      dtPrev: dts[i],
       tier,
     });
     o.safe = c.safe;

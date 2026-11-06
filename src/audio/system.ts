@@ -31,6 +31,10 @@ export class AudioSystem {
     return this.engine?.running ?? false;
   }
 
+  stats(): Record<string, unknown> {
+    return this.engine?.stats() ?? {};
+  }
+
   get musicErrors(): number {
     return this.music_?.errors ?? 0;
   }
@@ -48,6 +52,9 @@ export class AudioSystem {
         this.music_ = new Music(e);
         this.sfx_ = new Sfx(e);
         await e.unlock();
+        // build every persistent synth now (load time), never in the middle of a run
+        this.music_.prepare();
+        this.sfx_.prepare();
       })().catch((err) => {
         this.starting = null;
         console.debug('[audio] start failed', err);
@@ -75,11 +82,13 @@ export class AudioSystem {
   }
 
   suspend(): void {
+    this.music_?.pause();
     this.engine?.suspend();
   }
 
   resume(): void {
     this.engine?.resume();
+    this.music_?.unpause();
   }
 }
 

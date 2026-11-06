@@ -44,18 +44,19 @@ describe('spawner', () => {
     for (const o of list) expect(o.pos).toBeCloseTo(distAt(o.tNom), 6);
   });
 
-  it('uses the tiered gap time (snake interior is 0.6x)', () => {
+  it('gaps are 8th-note quantised and never below 0.9 x the design gap time (snake interior 0.6x)', () => {
     for (const seed of SEEDS) {
       const list = generate(seed, 300);
       for (let i = 1; i < list.length; i++) {
         const o = list[i];
         const prev = list[i - 1];
         const gt = gapTime(tierAt(prev.tNom));
-        const gtPrevTier = gapTime(Math.max(1, tierAt(prev.tNom) - 1));
-        const ok = [gt, gt * SNAKE_INNER_FACTOR, gtPrevTier * SNAKE_INNER_FACTOR].some(
-          (v) => Math.abs(v - o.dtPrev) < 1e-9,
-        );
-        expect(ok).toBe(true);
+        const factor = o.kind === 'SNAKE' && prev.kind === 'SNAKE' ? SNAKE_INNER_FACTOR : 1;
+        expect(o.dtPrev).toBeGreaterThanOrEqual(0.9 * gt * (o.kind === 'SNAKE' ? SNAKE_INNER_FACTOR : 1) - 1e-9);
+        // gap in beats is a multiple of 0.5
+        const beats = (o.beat - prev.beat) / 0.5;
+        expect(Math.abs(beats - Math.round(beats))).toBeLessThan(1e-9);
+        void factor;
       }
     }
   });

@@ -1,7 +1,22 @@
-import { angDiff, arcCenter, arcDistance, wrap } from './angles';
+import { angDiff, arcCenter, arcDistance, arcLen, wrap } from './angles';
 import type { ItemKind } from './constants';
 import {
   ADRENALINE_DECAY,
+  BEAT_STREAK_EVERY,
+  BEAT_STREAK_SCORE,
+  CLUTCH_ADRENALINE,
+  CLUTCH_COOLDOWN,
+  CLUTCH_DURATION,
+  CLUTCH_MAX_PEN,
+  CLUTCH_SCORE,
+  CLUTCH_TIMESCALE,
+  HITSTOP_CAP_PER_SEC,
+  HITSTOP_CLUTCH,
+  HITSTOP_INSANE,
+  HITSTOP_INSANE_BEAT,
+  HITSTOP_TIMESCALE,
+  ONBEAT_MULT,
+  SIM_DT,
   ANG_ACCEL,
   ANG_DECEL,
   COMBO_PER_MULT,
@@ -46,16 +61,17 @@ import {
   SPAWN_AHEAD,
   START_THETA,
 } from './constants';
-import { speedAt, tierAt } from './difficulty';
+import { beatAt, bpmAtSpeed, gridOffsetSec, isOnBeat, LAUNCH_LOSS, launchFactor, speedAt, tierAt } from './difficulty';
 import { createSpawner, nextObstacle, peekObstacle } from './spawner';
 import type { GameEvent, GameState, Input, Obstacle, PowerUp } from './types';
 
-export function createState(seed: number, itemsEnabled = true): GameState {
+export function createState(seed: number, itemsEnabled = true, launchRamp = false): GameState {
+  const ringLen = Math.max(1, Math.round(1 / SIM_DT));
   return {
     seed,
     t: 0,
     dist: 0,
-    speed: speedAt(0),
+    speed: speedAt(0) * (launchRamp ? launchFactor(0) : 1),
     baseSpeed: speedAt(0),
     maxSpeed: speedAt(0),
     theta: START_THETA,
@@ -73,6 +89,18 @@ export function createState(seed: number, itemsEnabled = true): GameState {
     focusActive: false,
     focusLocked: false,
     timeScale: 1,
+    beatPos: 0,
+    bpm: bpmAtSpeed(speedAt(0)),
+    beatStreak: 0,
+    realT: 0,
+    hitStopT: 0,
+    hitStopActive: false,
+    hitRing: new Uint8Array(ringLen),
+    hitRingIdx: 0,
+    hitRingSum: 0,
+    reducedFlash: false,
+    beatBonus: true,
+    clutch: { active: false, t: 0, dir: 0, obs: null, lastStart: -1e9 },
     tier: 1,
     maxTier: 1,
     alive: true,
@@ -80,7 +108,7 @@ export function createState(seed: number, itemsEnabled = true): GameState {
     deathDone: false,
     invincible: false,
     spawnEnabled: true,
-    launchRamp: false,
+    launchRamp,
     shards: [],
     powerups: [],
     shield: false,
@@ -92,7 +120,7 @@ export function createState(seed: number, itemsEnabled = true): GameState {
     chainGot: 0,
     chainBroken: false,
     obstacles: [],
-    spawner: createSpawner(seed, itemsEnabled),
+    spawner: createSpawner(seed, itemsEnabled, launchRamp ? -LAUNCH_LOSS : 0),
     events: [],
   };
 }
@@ -170,6 +198,11 @@ function push(s: GameState, e: GameEvent): void {
 
 function kill(s: GameState): void {
   if (!s.alive) return;
+  if (s.clutch.active) {
+    s.clutch.active = false;
+    s.clutch.obs = null;
+    push(s, { type: 'clutchFail' });
+  }
   s.alive = false;
   s.deathTimer = 0;
   s.deathDone = false;
@@ -188,17 +221,18 @@ export function forceDeath(s: GameState): GameEvent[] {
   return s.events;
 }
 
-function award(s: GameState, kind: 'insane' | 'near', dist: number, pan: number): void {
+function award(s: GameState, kind: 'insane' | 'near', dist: number, pan: number, onBeat: boolean): void {
   const insane = kind === 'insane';
   s.combo++;
   if (s.combo > s.maxCombo) s.maxCombo = s.combo;
   s.comboTimer = COMBO_TIMEOUT;
   const prevMult = s.multiplier;
   s.multiplier = multiplierFor(s.combo);
-  const points = (insane ? INSANE_SCORE : NEAR_SCORE) * s.multiplier * scoreMult(s);
+  const points = (insane ? INSANE_SCORE : NEAR_SCORE) * s.multiplier * scoreMult(s) * (onBeat ? ONBEAT_MULT : 1);
   s.score += points;
   if (!s.overdrive) s.adrenaline = Math.min(1, s.adrenaline + (insane ? INSANE_ADRENALINE : NEAR_ADRENALINE));
   s.focus = Math.min(1, s.focus + (insane ? INSANE_FOCUS : NEAR_FOCUS));
+  s.beatStreak = onBeat ? s.beatStreak + 1 : 0;
   push(s, {
     type: kind === 'insane' ? 'insane' : 'nearMiss',
     points,
@@ -207,8 +241,100 @@ function award(s: GameState, kind: 'insane' | 'near', dist: number, pan: number)
     theta: s.theta,
     dist,
     pan,
+    onBeat,
+    streak: s.beatStreak,
   });
+  if (onBeat && s.beatStreak % BEAT_STREAK_EVERY === 0) {
+    const bonus = BEAT_STREAK_SCORE * s.multiplier * scoreMult(s);
+    s.score += bonus;
+    push(s, { type: 'beatStreak', streak: s.beatStreak, points: bonus });
+  }
   if (s.multiplier > prevMult) push(s, { type: 'multUp', mult: s.multiplier });
+  if (insane) requestHitStop(s, onBeat ? HITSTOP_INSANE_BEAT : HITSTOP_INSANE);
+}
+
+/**
+ * Ask for a hit-stop of `sec` real seconds (world timeScale 0.03). Requests are honoured while the trailing
+ * second holds less than HITSTOP_CAP_PER_SEC of hit-stop (see step()); reduced-flash mode halves them.
+ */
+export function requestHitStop(s: GameState, sec: number): void {
+  const t = sec * (s.reducedFlash ? 0.5 : 1);
+  if (t > s.hitStopT) s.hitStopT = t;
+}
+
+interface Pen {
+  /** smallest angle the ship must move to get clear of the solid (rad) */
+  p: number;
+  /** +1 / -1 direction of that escape */
+  dir: number;
+}
+const pen: Pen = { p: 0, dir: 0 };
+
+/** Penetration of the ship into the (rotated) solids of `o`: min escape shift of the deepest overlap. */
+function penetration(o: Obstacle, theta: number, out: Pen): Pen {
+  const sa = theta - SHIP_HALF_ANGLE;
+  const sb = theta + SHIP_HALF_ANGLE;
+  const rot = o.omega !== 0 ? o.rot : 0;
+  out.p = 0;
+  out.dir = 0;
+  for (let i = 0; i < o.solids.length; i++) {
+    const a = o.solids[i].a + rot;
+    const b = o.solids[i].b + rot;
+    if (arcDistance(sa, sb, a, b) > 0) continue;
+    const plus = wrap(b - sa); // shift needed to leave through the CCW end
+    const minus = wrap(sb - a); // ... through the CW end
+    const shift = Math.min(plus, minus, arcLen(sa, sb) + arcLen(a, b));
+    if (shift >= out.p) {
+      out.p = shift;
+      out.dir = plus <= minus ? 1 : -1;
+    }
+  }
+  return out;
+}
+
+function clutchReady(s: GameState): boolean {
+  return !s.clutch.active && !s.overdrive && !s.shield && s.realT - s.clutch.lastStart >= CLUTCH_COOLDOWN;
+}
+
+function startClutch(s: GameState, o: Obstacle | null, dir: number): void {
+  const c = s.clutch;
+  c.active = true;
+  c.t = CLUTCH_DURATION;
+  c.dir = dir;
+  c.obs = o;
+  c.lastStart = s.realT;
+  if (o) o.touched = true;
+  if (s.focusActive) {
+    s.focusActive = false;
+    push(s, { type: 'focusEnd' });
+  }
+  push(s, { type: 'clutchStart', theta: s.theta, dir });
+}
+
+/** Debug / tests: enter CLUTCH right now without an obstacle (it resolves as a success). */
+export function forceClutch(s: GameState): GameEvent[] {
+  s.events.length = 0;
+  if (s.alive && !s.clutch.active) startClutch(s, null, 1);
+  return s.events;
+}
+
+function resolveClutch(s: GameState): void {
+  const c = s.clutch;
+  const o = c.obs;
+  c.active = false;
+  c.obs = null;
+  c.dir = 0;
+  if (o && shipDistance(o, s.theta) === 0) {
+    push(s, { type: 'clutchFail' });
+    c.active = false;
+    kill(s);
+    return;
+  }
+  const points = CLUTCH_SCORE * s.multiplier * scoreMult(s);
+  s.score += points;
+  if (!s.overdrive) s.adrenaline = Math.min(1, s.adrenaline + CLUTCH_ADRENALINE);
+  push(s, { type: 'clutchSuccess', points, theta: s.theta });
+  requestHitStop(s, HITSTOP_CLUTCH);
 }
 
 function activate(s: GameState, p: PowerUp): void {
@@ -251,9 +377,29 @@ export function applyItem(s: GameState, kind: ItemKind): void {
   }
 }
 
-/** Debug / test helper: put a power-up right in front of the ship. */
+/**
+ * Debug / test helper: put a power-up right in front of the ship.
+ * The ship may still be coasting to a stop (ANG_DECEL), so the item goes where the ship will be when it
+ * arrives if the player lets go of the controls, not where it is right now: placing it at the current angle
+ * made pick-ups miss by more than POWERUP_PICK_ANGLE whenever a turn had just ended (the flaky e2e).
+ * The id comes from the spawner's counter, so it never repeats after an item was removed.
+ */
 export function spawnItemAhead(s: GameState, kind: ItemKind, ahead = 12): PowerUp {
-  const p: PowerUp = { id: 900000 + s.powerups.length, kind, anchorId: 0, pos: s.dist + ahead, theta: s.theta, z: -ahead, done: false };
+  const va = Math.abs(s.angVel);
+  const tArrive = ahead / Math.max(1, s.speed);
+  const dRest = (va * va) / (2 * ANG_DECEL);
+  const dArrive = tArrive >= va / ANG_DECEL ? dRest : va * tArrive - 0.5 * ANG_DECEL * tArrive * tArrive;
+  // aim between "where the ship is on arrival" and "where it ends up" so the whole pick-up window is covered
+  const coast = Math.sign(s.angVel) * 0.5 * (dArrive + dRest);
+  const p: PowerUp = {
+    id: s.spawner.nextItemId++,
+    kind,
+    anchorId: 0,
+    pos: s.dist + ahead,
+    theta: wrap(s.theta + coast),
+    z: -ahead,
+    done: false,
+  };
   s.powerups.push(p);
   return p;
 }
@@ -324,6 +470,7 @@ function collectItems(s: GameState): void {
 export function step(s: GameState, input: Input, dt: number): GameEvent[] {
   const ev = s.events;
   ev.length = 0;
+  s.realT += dt;
 
   // ---- focus & time scale (real time) ----
   if (s.alive) {
@@ -347,7 +494,21 @@ export function step(s: GameState, input: Input, dt: number): GameEvent[] {
       s.focus = Math.min(1, s.focus + FOCUS_REGEN * dt);
     }
     s.timeScale = s.focusActive ? FOCUS_TIMESCALE : 1;
+    if (s.clutch.active) s.timeScale = CLUTCH_TIMESCALE;
+    // hit-stop: capped so that no trailing second holds more than HITSTOP_CAP_PER_SEC of it
+    const capSteps = Math.round(HITSTOP_CAP_PER_SEC / SIM_DT);
+    const stop = s.hitStopT > 0 && s.hitRingSum < capSteps;
+    if (s.hitStopT > 0) {
+      s.hitStopT = stop ? Math.max(0, s.hitStopT - dt) : 0;
+    }
+    s.hitStopActive = stop;
+    if (stop) s.timeScale = Math.min(s.timeScale, HITSTOP_TIMESCALE);
+    const ring = s.hitRing;
+    s.hitRingSum += (stop ? 1 : 0) - ring[s.hitRingIdx];
+    ring[s.hitRingIdx] = stop ? 1 : 0;
+    s.hitRingIdx = (s.hitRingIdx + 1) % ring.length;
   } else {
+    s.hitStopActive = false;
     s.deathTimer += dt;
     if (s.deathTimer >= DEATH_SLOWMO_TIME) s.deathDone = true;
     s.timeScale = DEATH_TIMESCALE;
@@ -362,7 +523,7 @@ export function step(s: GameState, input: Input, dt: number): GameEvent[] {
   const sdt = dt * s.timeScale;
 
   // ---- overdrive trigger ----
-  if (s.alive && input.overdrive && !s.overdrive && s.adrenaline >= 0.999) {
+  if (s.alive && input.overdrive && !s.overdrive && !s.clutch.active && s.adrenaline >= 0.999) {
     s.overdrive = true;
     s.overdriveT = OVERDRIVE_DURATION;
     s.adrenaline = 0;
@@ -375,11 +536,14 @@ export function step(s: GameState, input: Input, dt: number): GameEvent[] {
   }
 
   const sdtEff = sdt;
+  const prevSpeed = s.speed;
 
   // ---- clock, speed, tier ----
   if (s.alive) {
     s.t += sdtEff;
     s.baseSpeed = speedAt(s.t);
+    s.bpm = bpmAtSpeed(s.baseSpeed);
+    s.beatPos = beatAt(s.t);
     const tier = tierAt(s.t);
     if (tier > s.tier) {
       s.tier = tier;
@@ -412,15 +576,15 @@ export function step(s: GameState, input: Input, dt: number): GameEvent[] {
       }
     }
     s.speed = s.baseSpeed * (s.overdrive ? OVERDRIVE_SPEED_MULT : 1) * (s.nitroT > 0 ? NITRO_SPEED_MULT : 1);
-    if (s.launchRamp && s.t < LAUNCH_RAMP_TIME) {
-      const k = s.t / LAUNCH_RAMP_TIME;
-      s.speed *= 0.2 + 0.8 * (1 - (1 - k) * (1 - k) * (1 - k));
-    }
+    if (s.launchRamp && s.t < LAUNCH_RAMP_TIME) s.speed *= launchFactor(s.t / LAUNCH_RAMP_TIME);
     if (s.speed > s.maxSpeed) s.maxSpeed = s.speed;
   }
-  s.dist += s.speed * sdt;
+  // trapezoid rule: exact for the linear speed curve, so obstacles reach the ship on the beat grid
+  s.dist += 0.5 * (prevSpeed + s.speed) * sdt;
+  if (!s.alive) s.beatPos += (s.bpm / 60) * sdt;
 
-  if (s.alive) updateMove(s, input.move, sdt);
+  // the ship steers in real time, even while the world is frozen by CLUTCH
+  if (s.alive) updateMove(s, input.move, s.clutch.active ? dt : sdt);
   else {
     // drift to a stop slowly
     s.angVel *= 0.98;
@@ -458,7 +622,8 @@ export function step(s: GameState, input: Input, dt: number): GameEvent[] {
     if (o.omega !== 0) o.rot = rotOf(o, s.baseSpeed);
     let removed = false;
 
-    if (s.alive && prevZ <= HIT_WINDOW && o.z >= -HIT_WINDOW) {
+    const pending = s.clutch.active && o === s.clutch.obs; // collision with this one is deferred
+    if (s.alive && !pending && prevZ <= HIT_WINDOW && o.z >= -HIT_WINDOW) {
       o.overlapped = true;
       const d = shipDistance(o, s.theta);
       if (d < o.minDist) o.minDist = d;
@@ -475,6 +640,8 @@ export function step(s: GameState, input: Input, dt: number): GameEvent[] {
           s.graceT = Math.max(s.graceT, SHIELD_GRACE);
           push(s, { type: 'shieldBreak', theta: s.theta, id: o.id });
           removed = true;
+        } else if (clutchReady(s) && penetration(o, s.theta, pen).p <= CLUTCH_MAX_PEN) {
+          startClutch(s, o, pen.dir);
         } else {
           o.touched = true;
           kill(s);
@@ -486,14 +653,26 @@ export function step(s: GameState, input: Input, dt: number): GameEvent[] {
       if (s.alive && o.overlapped && !o.touched && o.minDist !== Infinity) {
         const cls = classifyNearMiss(o.minDist);
         const pan = passPan(o, s.theta);
-        if (cls !== 'none') award(s, cls, o.minDist, pan);
-        else push(s, { type: 'pass', pan, dist: o.minDist });
+        // sim time at which the obstacle finished passing the ship (interpolated inside the step)
+        const tPass = s.t - (o.z - HIT_WINDOW) / Math.max(1, s.speed);
+        const onBeat = s.beatBonus && isOnBeat(gridOffsetSec(tPass));
+        if (cls !== 'none') award(s, cls, o.minDist, pan, onBeat);
+        else push(s, { type: 'pass', pan, dist: o.minDist, onBeat });
       }
       removed = true;
     }
     if (!removed) obs[w++] = o;
   }
   obs.length = w;
+
+  // ---- CLUTCH: keep the escape arrow current, resolve after the real-time window ----
+  const cl = s.clutch;
+  if (s.alive && cl.active) {
+    cl.t -= dt;
+    if (cl.obs && shipDistance(cl.obs, s.theta) === 0) cl.dir = penetration(cl.obs, s.theta, pen).dir;
+    else if (cl.obs) cl.dir = 0;
+    if (cl.t <= 0) resolveClutch(s);
+  }
 
   if (s.alive) collectItems(s);
 
@@ -506,6 +685,7 @@ export function step(s: GameState, input: Input, dt: number): GameEvent[] {
       push(s, { type: 'comboBreak', combo: s.combo });
       s.combo = 0;
       s.multiplier = 1;
+      s.beatStreak = 0;
     }
   }
   if (!s.overdrive && s.adrenaline > 0) s.adrenaline = Math.max(0, s.adrenaline - ADRENALINE_DECAY * sdtEff);

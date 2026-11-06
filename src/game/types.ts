@@ -17,6 +17,8 @@ export interface Obstacle {
   pos: number;
   /** Nominal time the ship reaches it (course time). */
   tNom: number;
+  /** Beat position (8th-note grid) at which the obstacle reaches the ship. */
+  beat: number;
   /** Nominal time since the previous obstacle. */
   dtPrev: number;
   tier: number;
@@ -71,10 +73,14 @@ export interface PowerUp {
 }
 
 export type GameEvent =
-  | { type: 'nearMiss'; points: number; mult: number; combo: number; theta: number; dist: number; pan: number }
-  | { type: 'insane'; points: number; mult: number; combo: number; theta: number; dist: number; pan: number }
+  | { type: 'nearMiss'; points: number; mult: number; combo: number; theta: number; dist: number; pan: number; onBeat: boolean; streak: number }
+  | { type: 'insane'; points: number; mult: number; combo: number; theta: number; dist: number; pan: number; onBeat: boolean; streak: number }
+  | { type: 'beatStreak'; streak: number; points: number }
+  | { type: 'clutchStart'; theta: number; dir: number }
+  | { type: 'clutchSuccess'; points: number; theta: number }
+  | { type: 'clutchFail' }
   | { type: 'smash'; points: number; theta: number; id: number }
-  | { type: 'pass'; pan: number; dist: number }
+  | { type: 'pass'; pan: number; dist: number; onBeat: boolean }
   | { type: 'death'; theta: number }
   | { type: 'tierUp'; tier: number }
   | { type: 'overdriveStart' }
@@ -93,6 +99,10 @@ export type GameEvent =
 export interface SpawnerState {
   rng: Rng;
   tNom: number;
+  /** Beat position of the last obstacle placed. */
+  beat: number;
+  /** Added to every course position (the launch ramp costs distance, so this is negative then so obstacles stay on the beat grid). */
+  dOff: number;
   nextId: number;
   prevSafe: Arc[];
   queue: Obstacle[];
@@ -107,6 +117,17 @@ export interface SpawnerState {
   nextItemId: number;
   shardQ: Shard[];
   powerQ: PowerUp[];
+}
+
+export interface ClutchState {
+  active: boolean;
+  /** Real seconds left. */
+  t: number;
+  /** Direction (+1 / -1) of the nearest escape, 0 when already clear. */
+  dir: number;
+  obs: Obstacle | null;
+  /** Real-time clock value of the last CLUTCH start. */
+  lastStart: number;
 }
 
 export interface GameState {
@@ -134,6 +155,26 @@ export interface GameState {
   focusActive: boolean;
   focusLocked: boolean;
   timeScale: number;
+  /** Beat clock owned by the sim: integral of BPM / 60 over sim time. */
+  beatPos: number;
+  /** Current BPM (follows the un-boosted speed). */
+  bpm: number;
+  /** ON BEAT near misses in a row. */
+  beatStreak: number;
+  /** Real-time clock (never scaled). */
+  realT: number;
+  /** Real seconds of hit-stop still to play. */
+  hitStopT: number;
+  hitStopActive: boolean;
+  /** Rolling 1 s window (one flag per step) used to cap total hit-stop. */
+  hitRing: Uint8Array;
+  hitRingIdx: number;
+  hitRingSum: number;
+  /** Debug / tests: turn ON BEAT detection off (everything counts as off-beat). */
+  beatBonus: boolean;
+  /** Reduced-flash mode halves hit-stop. */
+  reducedFlash: boolean;
+  clutch: ClutchState;
   tier: number;
   maxTier: number;
   alive: boolean;

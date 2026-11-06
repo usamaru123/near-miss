@@ -13,12 +13,14 @@
     <canvas id="streaks"></canvas>
     <div id="vignette"></div>
     <div id="focus-tint"></div>
+    <div id="clutch-tint"></div>
     <div id="flash"></div>
 
     <div id="hud" class="hidden">
       <div id="hud-left">
         <div id="score" class="num">0</div>
         <div id="mult-row"><span id="mult">×1</span><span id="combo">COMBO 0</span></div>
+        <div id="pace" class="hidden num">PB +0</div>
       </div>
       <div id="hud-right">
         <div id="speed"><span id="speed-val" class="num">360</span><span class="unit">km/h</span></div>
@@ -75,6 +77,8 @@
       <h2 class="go-title">CRASHED</h2>
       <div id="new-record" class="hidden">NEW RECORD!</div>
       <div class="go-score num" id="go-score">0</div>
+      <div id="go-vs" class="go-vs"></div>
+      <div id="go-bar" class="hidden"><div id="go-bar-fill"></div><span id="go-pct"></span></div>
       <dl class="stats">
         <div><dt>BEST</dt><dd id="go-best">0</dd></div>
         <div><dt>MAX COMBO</dt><dd id="go-combo">0</dd></div>

@@ -9,6 +9,7 @@ import {
 } from '../game/constants';
 import type { GameEvent, GameState } from '../game/types';
 import { bendUniforms } from './bend';
+import { ClutchArrow, GhostShip, TimingRing } from './beatfx';
 import { CameraRig } from './cameraRig';
 import { PickupRings, ShieldBubble, shockRadius } from './fx';
 import { ITEM_COLORS, ItemView } from './items';
@@ -21,8 +22,10 @@ import { Tunnel } from './tunnel';
 export interface ViewState {
   /** 0.3 when reduced-flash is on, else 1 */
   flashScale: number;
-  /** beat pulse 0..1 from the music */
+  /** beat pulse 0..1 from the sim's beat clock (strong on the downbeat, weak on the offbeat) */
   beat: number;
+  /** ghost of the best run (null = none) */
+  ghost: { visible: boolean; theta: number; z: number } | null;
 }
 
 const WHITE = new THREE.Color(0xffffff);
@@ -38,6 +41,9 @@ export class GameRenderer {
   private readonly items = new ItemView();
   private readonly bubble = new ShieldBubble();
   private readonly rings = new PickupRings();
+  private readonly ghost = new GhostShip();
+  private readonly clutchArrow = new ClutchArrow();
+  private readonly timingRing = new TimingRing();
   private readonly tmpColor = new THREE.Color();
   private nitroAmt = 0;
   private shockPeak = 0.55;
@@ -90,7 +96,7 @@ export class GameRenderer {
     this.rig.camera.add(this.shock);
     this.scene.add(this.rig.camera);
     this.ship.group.add(this.bubble.group);
-    this.scene.add(this.tunnel.group, this.obstacles.group, this.items.group, this.ship.group, this.lines.object, this.debris.mesh, this.rings.group);
+    this.scene.add(this.tunnel.group, this.obstacles.group, this.items.group, this.ship.group, this.lines.object, this.debris.mesh, this.rings.group, this.ghost.group, this.clutchArrow.group, this.timingRing.mesh);
     this.post = new PostFx(this.renderer, this.scene, this.rig.camera);
     this.resize();
   }
@@ -114,6 +120,8 @@ export class GameRenderer {
     this.nitroAmt = 0;
     this.debris.clear();
     this.ship.setVisible(true);
+    this.ghost.update(false, 0, 0, 0, 1);
+    this.timingRing.hide();
     this.rig.reset(state.theta);
   }
 
@@ -132,6 +140,24 @@ export class GameRenderer {
         this.rig.addTrauma(SHAKE.smash);
         this.post.addSpike(0.008 * f);
         this.burst(state, 46, 16, 0.9, 0.35);
+        break;
+      case 'beatStreak':
+        this.shipPos(state);
+        this.rings.emit(this.px, this.py, this.tmpColor.setHex(0x7df9ff), 4.5, 0.5);
+        this.post.addSpike(0.006 * f);
+        break;
+      case 'clutchStart':
+        this.rig.addTrauma(0.3);
+        this.post.addSpike(0.01 * f);
+        this.rig.fovKick(-6 * (0.4 + 0.6 * f));
+        break;
+      case 'clutchSuccess':
+        this.shipPos(state);
+        this.rig.addTrauma(0.9);
+        this.post.addSpike(0.02 * f);
+        this.rig.fovKick(14 * (0.4 + 0.6 * f));
+        this.rings.emit(this.px, this.py, this.tmpColor.setHex(0xff3b4e), 7, 0.6);
+        this.burst(state, 80, 14, 1.0, 0.3);
         break;
       case 'tierUp':
         this.rig.addTrauma(SHAKE.tierUp);
@@ -186,6 +212,23 @@ export class GameRenderer {
       default:
         break;
     }
+  }
+
+  private updateBeatFx(state: GameState, view: ViewState, realDt: number): void {
+    // timing ring on the next obstacle (only while the grid holds: boosts shift the arrival times)
+    let next = null as GameState['obstacles'][number] | null;
+    const obs = state.obstacles;
+    for (let i = 0; i < obs.length; i++) {
+      const o = obs[i];
+      if (o.z < 0 && (next === null || o.z > next.z)) next = o;
+    }
+    if (next && state.alive && !state.overdrive && state.nitroT <= 0) {
+      this.timingRing.update(next.beat - state.beatPos, next.z, this.edge, true);
+    } else this.timingRing.hide();
+    const g = view.ghost;
+    if (g) this.ghost.update(g.visible && state.alive, g.theta, g.z, 0, realDt);
+    else this.ghost.update(false, 0, 0, 0, realDt);
+    this.clutchArrow.update(state.clutch.active && state.alive, state.clutch.dir, state.theta, realDt);
   }
 
   /** Launch punch (countdown GO / retry). */
@@ -270,14 +313,15 @@ export class GameRenderer {
     this.edge.copy(this.primary).lerp(WHITE, 0.5);
 
     // focus amount (eased)
-    this.focusAmt += ((state.focusActive ? 1 : 0) - this.focusAmt) * (1 - Math.exp(-realDt * 9));
+    this.focusAmt += ((state.focusActive || state.clutch.active ? 1 : 0) - this.focusAmt) * (1 - Math.exp(-realDt * 9));
     this.nitroAmt += ((state.nitroT > 0 && state.alive ? 1 : 0) - this.nitroAmt) * (1 - Math.exp(-realDt * 8));
 
     bendUniforms.uBendTime.value = this.time;
     this.tunnel.update(state.dist, this.primary, this.secondary, view.beat, speedFrac);
-    this.obstacles.sync(state, this.edge, this.secondary);
+    this.obstacles.sync(state, this.edge, this.secondary, view.beat);
     this.items.sync(state, this.edge, sdt);
     this.bubble.update(state.shield && state.alive, realDt);
+    this.updateBeatFx(state, view, realDt);
     this.rings.update(realDt);
     this.lines.update(sdt, state.speed, speedFrac, state.overdrive, this.edge);
 

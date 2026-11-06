@@ -37,16 +37,15 @@ export interface TierDef {
   name: string;
   primary: number;
   secondary: number;
-  bpm: number;
   rainbow?: boolean;
 }
 export const TIERS: readonly TierDef[] = [
-  { name: 'WARM UP', primary: 0x00f0ff, secondary: 0xff2bd6, bpm: 120 },
-  { name: 'RUSH', primary: 0xa6ff00, secondary: 0x00f0ff, bpm: 132 },
-  { name: 'FRENZY', primary: 0xff8a00, secondary: 0xa23bff, bpm: 144 },
-  { name: 'HYPER', primary: 0xff2bd6, secondary: 0xffee00, bpm: 156 },
-  { name: 'MANIAC', primary: 0xff1a2e, secondary: 0xffffff, bpm: 166 },
-  { name: 'BEYOND', primary: 0xffffff, secondary: 0xffffff, bpm: 175, rainbow: true },
+  { name: 'WARM UP', primary: 0x00f0ff, secondary: 0xff2bd6 },
+  { name: 'RUSH', primary: 0xa6ff00, secondary: 0x00f0ff },
+  { name: 'FRENZY', primary: 0xff8a00, secondary: 0xa23bff },
+  { name: 'HYPER', primary: 0xff2bd6, secondary: 0xffee00 },
+  { name: 'MANIAC', primary: 0xff1a2e, secondary: 0xffffff },
+  { name: 'BEYOND', primary: 0xffffff, secondary: 0xffffff, rainbow: true },
 ];
 
 // --- obstacles / spawner ---
@@ -165,3 +164,40 @@ export const WARP_DURATION = 4;
 export const WARP_DRAIN_MULT = 0.5;
 export const EMP_RANGE = 90;
 export const ITEM_SEED_XOR = 0x9e3779b9;
+
+// --- beat sync (section 15.1 / 16.3) ---
+/** BPM follows the un-boosted speed: 140 at speed 50 -> 185 at speed 180. NITRO / OVERDRIVE do not change it. */
+export const BPM_AT_BASE = 140;
+export const BPM_AT_MAX = 185;
+export const BPM_SLOPE_PER_SPEED = (BPM_AT_MAX - BPM_AT_BASE) / (SPEED_MAX - SPEED_BASE);
+/** Grid unit: obstacles arrive on 8th notes (0.5 beats). */
+export const BEAT_GRID = 0.5;
+/** Quantised gaps are never shorter than this fraction of the design gapTime. */
+export const GAP_MIN_FRACTION = 0.9;
+export const ONBEAT_WINDOW = 0.07;
+export const ONBEAT_MULT = 1.5;
+export const BEAT_STREAK_EVERY = 4;
+export const BEAT_STREAK_SCORE = 2000;
+
+// --- CLUTCH + hit-stop (section 15.3) ---
+export const CLUTCH_MAX_PEN = 2.5 * DEG;
+export const CLUTCH_COOLDOWN = 8;
+export const CLUTCH_TIMESCALE = 0.06;
+export const CLUTCH_DURATION = 0.45;
+export const CLUTCH_SCORE = 3000;
+export const CLUTCH_ADRENALINE = 0.35;
+export const HITSTOP_TIMESCALE = 0.03;
+export const HITSTOP_INSANE = 0.05;
+export const HITSTOP_INSANE_BEAT = 0.07;
+export const HITSTOP_CLUTCH = 0.1;
+/** Total hit-stop allowed in any trailing second (real time). */
+export const HITSTOP_CAP_PER_SEC = 0.15;
+
+// --- ghost / PB pace (section 15.2) ---
+export const GHOST_Z_MIN = -14;
+export const GHOST_Z_MAX = 3;
+/** Score difference that moves the ghost by one world unit. */
+export const GHOST_SCORE_PER_UNIT = 300;
+export const TRACE_HZ = 10;
+export const TRACE_MAX_SECONDS = 15 * 60;
+export const OVERTAKE_MAX = 3;

@@ -13,6 +13,8 @@ export interface GameOverStats {
   maxCombo: number;
   topSpeedKmh: number;
   tier: number;
+  /** how the run compares to the previous best (null on the very first run) */
+  vs?: { beat: boolean; delta: number; pct: number } | null;
 }
 
 /** Title / pause / game-over overlays. */
@@ -67,6 +69,22 @@ export class Screens {
     el('go-speed').textContent = s.topSpeedKmh + ' km/h';
     el('go-tier').textContent = String(s.tier);
     el('new-record').classList.toggle('hidden', !s.newRecord);
+    const vs = el('go-vs');
+    const bar = el('go-bar');
+    if (s.vs) {
+      vs.classList.toggle('beat', s.vs.beat);
+      vs.textContent = s.vs.beat ? 'ベスト +' + s.vs.delta.toLocaleString('en-US') + ' 点' : 'ベストまで あと ' + s.vs.delta.toLocaleString('en-US') + ' 点';
+      bar.classList.toggle('hidden', s.vs.beat);
+      const pct = Math.round(s.vs.pct * 100);
+      el('go-bar-fill').style.width = '0%';
+      el('go-pct').textContent = 'ベストの ' + pct + '% まで到達';
+      window.setTimeout(() => {
+        el('go-bar-fill').style.width = pct + '%';
+      }, 60);
+    } else {
+      vs.textContent = '';
+      bar.classList.add('hidden');
+    }
     this.show('gameover');
   }
 

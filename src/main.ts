@@ -18,7 +18,9 @@ import {
   START_THETA,
   TIERS,
 } from './game/constants';
-import { createState, forceDeath, spawnItemAhead, step } from './game/sim';
+import { createState, forceClutch, forceDeath, spawnItemAhead, step } from './game/sim';
+import { PaceTracker, parseTrace, resultVsBest, serializeTrace } from './game/pace';
+import type { Trace } from './game/pace';
 import type { GameEvent, GameState, Input } from './game/types';
 import { ITEM_KINDS } from './game/constants';
 import type { ItemKind } from './game/constants';
@@ -40,6 +42,12 @@ interface NearMissDebug {
   /** Fire every kind of overlay text at once (layout test). */
   popupDemo(): void;
   audioStats(): Record<string, unknown>;
+  /** Enter CLUTCH right now (no obstacle needed). */
+  triggerClutch(): void;
+  /** Beat clock / Transport slaving diagnostics. */
+  musicSync(): Record<string, unknown>;
+  /** Worst-case audio load for `seconds`; reports limiter reduction and underrun indicators. */
+  audioStress(seconds: number): Promise<Record<string, unknown>>;
 }
 declare global {
   interface Window {
@@ -50,6 +58,7 @@ declare global {
 const LS_BEST = 'nearmiss.best';
 const LS_FLASH = 'nearmiss.reducedFlash';
 const LS_VOL = 'nearmiss.vol.';
+const LS_GHOST = 'nearmiss.ghost';
 
 const ITEM_LABEL: Record<ItemKind, { text: string; color: string }> = {
   SHIELD: { text: 'SHIELD!', color: '#4a9bff' },
@@ -90,6 +99,10 @@ let state: GameState = makeTitleState();
 let pendingSeed: number | null = null;
 let acc = 0;
 let heartAcc = 0;
+/** How much of real time the sim actually keeps up with (1 at a healthy frame rate; < 1 when frames are dropped). */
+let simSpeed = 1;
+let simNum = 0;
+let simDen = 0;
 let gameOverAt = 0;
 let overdriveQueued = false;
 let best = Number(lsGet(LS_BEST)) || 0;
@@ -97,6 +110,9 @@ let titleTime = 0;
 let countdownT = 0;
 let countdownShown = -1;
 let milestonesHit = 0;
+let pace = new PaceTracker(null, 0);
+const ghostView = { visible: false, theta: 0, z: 0 };
+const viewState: { flashScale: number; beat: number; ghost: typeof ghostView | null } = { flashScale: 1, beat: 0, ghost: null };
 const simInput: Input = { move: 0, focus: false, overdrive: false };
 const shipPos = { x: 0, y: 0 };
 
@@ -115,6 +131,7 @@ function setReducedFlash(v: boolean): void {
   lsSet(LS_FLASH, v ? '1' : '0');
   screens.setReducedFlash(v);
   hud.flashScale = flashScale();
+  state.reducedFlash = v;
 }
 screens.onReducedFlashChange = setReducedFlash;
 setReducedFlash(reducedFlash);
@@ -166,10 +183,17 @@ function takeSeed(): number {
 }
 
 function resetRunState(seed: number): void {
-  state = createState(seed);
-  state.launchRamp = true;
+  state = createState(seed, true, true);
+  state.reducedFlash = reducedFlash;
+  let trace: Trace | null = parseTrace(lsGet(LS_GHOST));
+  if (best <= 0) trace = null;
+  pace = new PaceTracker(trace, best);
+  ghostView.visible = false;
   acc = 0;
   heartAcc = 0;
+  simSpeed = 1;
+  simNum = 0;
+  simDen = 0;
   overdriveQueued = false;
   milestonesHit = 0;
   renderer.reset(state);
@@ -181,11 +205,13 @@ function resetRunState(seed: number): void {
   music.setNitro(false);
   music.setFocus(false);
   hud.clearPopups();
+  hud.setPace(null);
 }
 
 /** The real start of a run: music, wind, launch punch. */
 function launchRun(): void {
   state.dist = 0;
+  state.speed = state.baseSpeed * 0.2; // start of the launch ramp (keeps the distance integral exact)
   music.start(1);
   sfx.launch();
   sfx.startWind();
@@ -245,10 +271,12 @@ function resumeGame(): void {
 
 function finishRun(): void {
   const score = Math.floor(state.score);
+  const prevBest = best;
   const newRecord = score > best;
   if (newRecord) {
     best = score;
     lsSet(LS_BEST, String(best));
+    lsSet(LS_GHOST, serializeTrace(pace.finish(score)));
   }
   hud.setVisible(false);
   screens.showGameOver({
@@ -258,6 +286,7 @@ function finishRun(): void {
     maxCombo: state.maxCombo,
     topSpeedKmh: Math.round(state.maxSpeed * KMH_FACTOR),
     tier: state.maxTier,
+    vs: prevBest > 0 ? resultVsBest(score, prevBest) : null,
   });
   gameOverAt = performance.now();
   screen = 'gameover';
@@ -304,21 +333,48 @@ function onAction(a: Action): void {
 }
 input.onAction = onAction;
 
+/** FOCUS and CLUTCH both muffle the mix (lowpass, more reverb, louder heartbeat). */
+function applyMuffle(): void {
+  audio.setFocus(state.focusActive || state.clutch.active);
+}
+
 function handleEvent(e: GameEvent): void {
   switch (e.type) {
     case 'nearMiss':
       sfx.nearMiss(e.dist, e.pan);
       renderer.shipScreen(shipPos);
-      hud.floater('NEAR MISS +' + e.points, shipPos.x, shipPos.y + 34, 'near');
+      hud.floater('NEAR MISS +' + e.points + (e.onBeat ? ' \u00b7 ON BEAT' : ''), shipPos.x, shipPos.y + 34, e.onBeat ? 'insane' : 'near');
       hud.popScore();
-      hud.flash('#ffffff', 0.08);
+      hud.flash(e.onBeat ? '#7df9ff' : '#ffffff', e.onBeat ? 0.12 : 0.08);
+      if (e.onBeat) sfx.beatAccent(false);
       break;
     case 'insane':
       sfx.insane(e.dist, e.pan);
       renderer.shipScreen(shipPos);
-      hud.floater('INSANE!! +' + e.points, shipPos.x, shipPos.y + 34, 'insane');
+      hud.floater('INSANE!! +' + e.points + (e.onBeat ? ' \u00b7 ON BEAT' : ''), shipPos.x, shipPos.y + 34, 'insane');
       hud.popScore();
-      hud.flash('#ffee66', 0.2);
+      hud.flash(e.onBeat ? '#7df9ff' : '#ffee66', 0.2);
+      if (e.onBeat) sfx.beatAccent(true);
+      break;
+    case 'beatStreak':
+      sfx.beatStreak();
+      hud.popup('BEAT STREAK x' + e.streak + ' +' + e.points, 'beat');
+      hud.popScore();
+      break;
+    case 'clutchStart':
+      sfx.clutchStart();
+      applyMuffle();
+      hud.flash('#ff1030', 0.3);
+      break;
+    case 'clutchSuccess':
+      sfx.clutchSuccess();
+      hud.popup('CLUTCH!! +' + e.points, 'clutch');
+      hud.popScore();
+      hud.flash('#ffffff', 0.5);
+      applyMuffle();
+      break;
+    case 'clutchFail':
+      applyMuffle();
       break;
     case 'smash':
       sfx.smash();
@@ -390,17 +446,39 @@ function handleEvent(e: GameEvent): void {
       hud.overdriveBanner(false);
       break;
     case 'focusStart':
-      audio.setFocus(true);
-      music.setFocus(true);
-      break;
     case 'focusEnd':
-      audio.setFocus(false);
-      music.setFocus(false);
+      applyMuffle();
       break;
     case 'comboBreak':
       break;
   }
   renderer.onEvent(e, state);
+}
+
+/** Beat pulse from the sim clock: strong on the downbeat, weak on the offbeat (8th grid). */
+function simBeatPulse(): number {
+  const f = state.beatPos * 2;
+  const idx = Math.floor(f);
+  return ((idx & 1) === 0 ? 1 : 0.45) * Math.exp(-(f - idx) * 5);
+}
+
+function updatePace(): void {
+  const u = pace.update(state.t, state.score, state.theta);
+  ghostView.visible = u.ghostVisible;
+  ghostView.theta = u.ghostTheta;
+  ghostView.z = u.ghostZ;
+  hud.setPace(u.hasBest ? u.diff : null);
+  if (u.overtake) {
+    hud.popup('OVERTAKE!', 'overtake');
+    hud.flash('#5dff8a', 0.22);
+    sfx.overtake();
+  }
+  if (u.newRecord) {
+    hud.popup('NEW RECORD!', 'record');
+    hud.flash('#ffee66', 0.4);
+    sfx.newRecord();
+    renderer.rig.addTrauma(0.6);
+  }
 }
 
 function simStep(): void {
@@ -415,7 +493,8 @@ function simStep(): void {
 let last = performance.now();
 function frame(now: number): void {
   requestAnimationFrame(frame);
-  const dt = Math.min(0.1, Math.max(0, (now - last) / 1000));
+  const wall = Math.max(0.001, (now - last) / 1000);
+  const dt = Math.min(0.1, Math.max(0, wall));
   last = now;
 
   if (screen === 'playing' || screen === 'gameover') {
@@ -427,18 +506,29 @@ function frame(now: number): void {
       n++;
     }
     if (n === MAX_STEPS_PER_FRAME) acc = 0;
+    if (screen === 'playing') {
+      // ratio of simulated to real time over a ~0.4 s window (unbiased, unlike averaging per-frame ratios)
+      const decay = Math.exp(-wall / 0.4);
+      simNum = simNum * decay + n * SIM_DT;
+      simDen = simDen * decay + wall;
+      simSpeed = Math.min(1.5, simNum / Math.max(0.05, simDen));
+    }
     if (screen === 'playing' && !state.alive && state.deathDone) finishRun();
 
-    // heartbeat synced with the HUD heart
+    // heartbeat: the HUD heart always pulses; the thump is only audible in FOCUS / CLUTCH (no constant low loop)
     if (screen === 'playing' && state.alive) {
       heartAcc += dt;
-      const interval = 60 / hud.heartBpm;
+      const loud = state.focusActive || state.clutch.active;
+      const interval = state.clutch.active ? 0.34 : 60 / hud.heartBpm;
       if (heartAcc >= interval) {
         heartAcc -= interval;
         if (heartAcc > interval) heartAcc = 0;
         hud.beat();
-        sfx.heart(state.focusActive);
+        sfx.heart(loud);
       }
+      // the Transport follows the sim's beat clock (BPM x timeScale, +-3 % drift trim)
+      music.sync(state.beatPos, state.bpm, state.timeScale * simSpeed);
+      updatePace();
     }
   } else if (screen === 'countdown') {
     countdownT += dt;
@@ -466,8 +556,11 @@ function frame(now: number): void {
 
   if (screen !== 'paused') {
     const speedFrac = Math.max(0, Math.min(1, (state.baseSpeed - SPEED_BASE) / (SPEED_MAX - SPEED_BASE)));
-    const beat = music.beatPulse();
-    renderer.frame(state, dt, { flashScale: flashScale(), beat });
+    const beat = screen === 'playing' ? simBeatPulse() : music.beatPulse();
+    viewState.flashScale = flashScale();
+    viewState.beat = beat;
+    viewState.ghost = screen === 'playing' ? ghostView : null;
+    renderer.frame(state, dt, viewState);
     if (screen === 'playing' || screen === 'countdown') {
       const tier = TIERS[state.tier - 1];
       const css = state.overdrive ? '#ff6070' : tier.rainbow ? '#ffffff' : '#' + tier.primary.toString(16).padStart(6, '0');
@@ -529,6 +622,15 @@ window.__NEARMISS__ = {
       warpT: state.warpT,
       shards: state.shards.length,
       powerups: state.powerups.length,
+      beatPos: state.beatPos,
+      bpm: state.bpm,
+      clutch: state.clutch.active,
+      clutchDir: state.clutch.dir,
+      hitStop: state.hitStopActive,
+      beatStreak: state.beatStreak,
+      hasGhost: pace.hasTrace,
+      ghostVisible: ghostView.visible,
+      paceDiff: pace.out.diff,
     };
   },
   forceDeath() {
@@ -551,11 +653,67 @@ window.__NEARMISS__ = {
     hud.popup('PERFECT CHAIN! +1000', 'perfect');
     hud.tierBanner(3);
     hud.itemPopup('NITRO!!', '#ff8a00');
+    hud.popup('CLUTCH!! +3000', 'clutch');
+    hud.popup('NEW RECORD!', 'record');
     hud.milestone('1000 km/h!!');
     renderer.shipScreen(shipPos);
     hud.floater('NEAR MISS +500', shipPos.x, shipPos.y + 34, 'near');
     hud.floater('INSANE!! +1500', shipPos.x, shipPos.y + 34, 'insane');
     renderer.milestone();
+  },
+  triggerClutch() {
+    if (screen !== 'playing' || !state.alive) return;
+    const ev = forceClutch(state);
+    for (let i = 0; i < ev.length; i++) handleEvent(ev[i]);
+  },
+  musicSync() {
+    return {
+      simSpeed,
+      syncError: music.syncError,
+      hardResyncs: music.hardResyncs,
+      transportBpm: music.bpm,
+      simBpm: state.bpm,
+      timeScale: state.timeScale,
+      beatPos: state.beatPos,
+      errors: audio.musicErrors,
+    };
+  },
+  async audioStress(seconds: number) {
+    await audio.unlock();
+    music.start(6);
+    music.setOverdrive(true);
+    music.setNitro(true);
+    sfx.startWind();
+    sfx.updateWind(1, true, true);
+    let worstGr = 0;
+    let worstSfxGr = 0;
+    const sample = (): void => {
+      const st = audio.stats();
+      worstGr = Math.min(worstGr, Number(st.limiterReductionDb) || 0);
+      worstSfxGr = Math.min(worstSfxGr, Number(st.sfxLimiterReductionDb) || 0);
+    };
+    const poll = window.setInterval(sample, 20);
+    let k = 0;
+    const burst = window.setInterval(() => {
+      sfx.insane(0, -0.5);
+      sfx.smash();
+      sfx.shard(k++ % 8);
+      sfx.whoosh(0.4, 1);
+      sfx.nearMiss(0.02, 0.3);
+      if (k % 4 === 0) sfx.powerup('EMP');
+      if (k % 5 === 0) sfx.perfectChain();
+      if (k % 7 === 0) sfx.shieldBreak();
+      if (k % 9 === 0) sfx.overdriveStart();
+      if (k % 11 === 0) sfx.boom();
+    }, 180);
+    await new Promise((r) => window.setTimeout(r, seconds * 1000));
+    window.clearInterval(burst);
+    window.clearInterval(poll);
+    sample();
+    const stats = audio.stats();
+    music.stop();
+    sfx.stopWind();
+    return { worstLimiterReductionDb: worstGr, worstSfxLimiterReductionDb: worstSfxGr, ...stats };
   },
   audioStats() {
     return {
@@ -565,6 +723,7 @@ window.__NEARMISS__ = {
       loaded: audio.bank.done,
       total: audio.bank.total,
       musicErrors: audio.musicErrors,
+      engine: audio.stats(),
     };
   },
 };
