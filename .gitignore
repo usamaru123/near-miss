@@ -1,0 +1,11 @@
+# Regenerable outputs only — everything else is tracked
+node_modules/
+dist/
+play/
+play-next/
+test-results/
+playwright-report/
+*.log
+
+# Unrelated local demo, kept out of the public repo
+html-in-canvas-demo/

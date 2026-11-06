@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#000000" />
+  <title>NEAR//MISS</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23000'/%3E%3Cpath d='M16 4 28 28 16 22 4 28z' fill='%2300f0ff'/%3E%3C/svg%3E" />
+</head>
+<body>
+  <div id="app">
+    <canvas id="gl"></canvas>
+    <canvas id="streaks"></canvas>
+    <div id="vignette"></div>
+    <div id="focus-tint"></div>
+    <div id="flash"></div>
+
+    <div id="hud" class="hidden">
+      <div id="hud-left">
+        <div id="score" class="num">0</div>
+        <div id="mult-row"><span id="mult">×1</span><span id="combo">COMBO 0</span></div>
+      </div>
+      <div id="hud-right">
+        <div id="speed"><span id="speed-val" class="num">360</span><span class="unit">km/h</span></div>
+        <div id="heart-row"><span id="heart">♥</span><span id="bpm-val" class="num">72</span><span class="unit">BPM</span></div>
+        <div id="effects">
+          <div class="fx hidden" data-k="SHIELD" title="SHIELD"><i>S</i></div>
+          <div class="fx hidden" data-k="NITRO" title="NITRO"><i>N</i></div>
+          <div class="fx hidden" data-k="DOUBLE" title="DOUBLE"><i>×2</i></div>
+          <div class="fx hidden" data-k="WARP" title="WARP"><i>W</i></div>
+        </div>
+      </div>
+      <div id="hud-bottom">
+        <div id="od-label">SPACE <span class="sym">→</span> OVERDRIVE</div>
+        <div class="bar" id="adr-bar"><div class="fill" id="adr-fill"></div></div>
+        <div class="bar thin" id="focus-bar"><div class="fill" id="focus-fill"></div></div>
+        <div class="bar-caption"><span>ADRENALINE</span><span>FOCUS [SHIFT]</span></div>
+      </div>
+      <div id="floaters"></div>
+      <div id="popups"></div>
+      <button id="focus-btn" type="button">FOCUS</button>
+    </div>
+
+    <section id="title" class="screen">
+      <h1 class="logo glitch" data-text="NEAR//MISS">NEAR//MISS</h1>
+      <p class="sub">スレスレで生き残れ</p>
+      <ul class="help">
+        <li><b><span class="sym">← →</span> / A D</b><span>周回移動</span></li>
+        <li><b>SPACE</b><span>OVERDRIVE（ゲージ満タン時）</span></li>
+        <li><b>SHIFT</b><span>FOCUS（スローモー）</span></li>
+        <li><b>P / ESC</b><span>ポーズ</span></li>
+        <li><b>M</b><span>ミュート</span></li>
+        <li class="touch-help"><b>TOUCH</b><span>左右を押す / 2本指で OVERDRIVE / FOCUS ボタン</span></li>
+      </ul>
+      <div id="best-title" class="best">BEST 0</div>
+      <label class="toggle"><input type="checkbox" id="reduce-flash" /><span>フラッシュ軽減 / REDUCED FLASH</span></label>
+      <div id="vols">
+        <label class="vol"><span>MASTER</span><input type="range" id="vol-master" min="0" max="100" step="1" value="80" /></label>
+        <label class="vol"><span>BGM</span><input type="range" id="vol-bgm" min="0" max="100" step="1" value="70" /></label>
+        <label class="vol"><span>SE</span><input type="range" id="vol-se" min="0" max="100" step="1" value="100" /></label>
+      </div>
+      <div id="loader">
+        <div id="load-bar"><div id="load-fill"></div></div>
+        <div id="load-text">LOADING AUDIO 0%</div>
+      </div>
+      <div id="press" class="press hidden">PRESS SPACE / TAP TO START</div>
+    </section>
+
+    <section id="pause" class="screen hidden">
+      <h2>PAUSED</h2>
+      <div class="press blink">P / ESC / TAP TO RESUME</div>
+    </section>
+
+    <section id="gameover" class="screen hidden">
+      <h2 class="go-title">CRASHED</h2>
+      <div id="new-record" class="hidden">NEW RECORD!</div>
+      <div class="go-score num" id="go-score">0</div>
+      <dl class="stats">
+        <div><dt>BEST</dt><dd id="go-best">0</dd></div>
+        <div><dt>MAX COMBO</dt><dd id="go-combo">0</dd></div>
+        <div><dt>TOP SPEED</dt><dd id="go-speed">0 km/h</dd></div>
+        <div><dt>TIER</dt><dd id="go-tier">1</dd></div>
+      </dl>
+      <div class="press blink">SPACE / R / TAP — RETRY</div>
+    </section>
+
+    <div id="countdown" class="hidden"></div>
+    <div id="mute-ind" class="hidden">MUTED</div>
+  </div>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "near-miss-dev",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--", "--port", "5173", "--strictPort"],
+      "port": 5173
+    },
+    {
+      "name": "near-miss-play",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "play"],
+      "port": 4300
+    }
+  ]
+}

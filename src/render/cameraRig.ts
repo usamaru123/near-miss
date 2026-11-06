@@ -1,0 +1,100 @@
+import * as THREE from 'three';
+import { angDiff } from '../game/angles';
+import {
+  CAM_ROLL_MAX,
+  FOV_MAX,
+  FOV_MIN,
+  FOV_OVERDRIVE,
+  LAUNCH_START_FOV,
+  MAX_ANG_VEL,
+  SPEED_BASE,
+  SPEED_MAX,
+} from '../game/constants';
+
+const CAM_RADIUS = 2.9;
+const CAM_Z = 6.5;
+
+/** Follows the ship angle (ship stays at screen bottom; the tunnel rolls), with lag, tilt, FOV and trauma shake. */
+export class CameraRig {
+  readonly camera: THREE.PerspectiveCamera;
+  private ang = 0;
+  private tilt = 0;
+  private fov = FOV_MIN;
+  private fovKickV = 0;
+  private trauma = 0;
+  private time = 0;
+  private readonly target = new THREE.Vector3(0, 0, -40);
+
+  constructor(aspect: number) {
+    this.camera = new THREE.PerspectiveCamera(FOV_MIN, aspect, 0.1, 420);
+  }
+
+  setAspect(a: number): void {
+    this.camera.aspect = a;
+    this.camera.updateProjectionMatrix();
+  }
+
+  reset(theta: number): void {
+    this.ang = theta;
+    this.tilt = 0;
+    this.trauma = 0;
+  }
+
+  /** Launch punch: start narrow, snap out to the normal FOV with an overshoot. */
+  launch(scale: number): void {
+    this.fov = LAUNCH_START_FOV;
+    this.fovKickV = 16 * scale;
+    this.trauma = Math.min(1, this.trauma + 0.7 * scale);
+  }
+
+  fovKick(deg: number): void {
+    this.fovKickV += deg;
+  }
+
+  addTrauma(t: number): void {
+    this.trauma = Math.min(1, this.trauma + t);
+  }
+
+  get currentTrauma(): number {
+    return this.trauma;
+  }
+
+  update(theta: number, angVel: number, baseSpeed: number, overdrive: boolean, dt: number, shakeScale: number, fovBoost = 0): void {
+    this.time += dt;
+    this.ang += angDiff(this.ang, theta) * (1 - Math.exp(-dt * 11));
+    const tiltTarget = Math.max(-1, Math.min(1, angVel / MAX_ANG_VEL)) * CAM_ROLL_MAX;
+    this.tilt += (tiltTarget - this.tilt) * (1 - Math.exp(-dt * 6));
+
+    const speedFrac = Math.max(0, Math.min(1, (baseSpeed - SPEED_BASE) / (SPEED_MAX - SPEED_BASE)));
+    const fovTarget = (overdrive ? FOV_OVERDRIVE : FOV_MIN + (FOV_MAX - FOV_MIN) * speedFrac) + fovBoost;
+    this.fov += (fovTarget - this.fov) * (1 - Math.exp(-dt / 0.1));
+    this.fovKickV *= Math.exp(-dt * 3.5);
+    const fovNow = this.fov + this.fovKickV;
+    if (Math.abs(this.camera.fov - fovNow) > 0.02) {
+      this.camera.fov = fovNow;
+      this.camera.updateProjectionMatrix();
+    }
+
+    this.trauma = Math.max(0, this.trauma - dt * 1.5);
+    const shake = this.trauma * this.trauma * shakeScale;
+    const t = this.time * 38;
+    const sx = (Math.sin(t * 1.13) + Math.sin(t * 2.31 + 1.7) * 0.5) * 0.45 * shake;
+    const sy = (Math.sin(t * 1.71 + 3.1) + Math.sin(t * 2.93) * 0.5) * 0.45 * shake;
+    const sr = Math.sin(t * 1.37 + 0.5) * 0.09 * shake;
+
+    // constant speed-proportional rumble (separate from event shake)
+    const rum = (0.01 + 0.03 * speedFrac) * (overdrive ? 1.6 : 1) * shakeScale;
+    const rt = this.time * 173;
+    const rx = (Math.sin(rt) + Math.sin(rt * 1.7 + 1.1) * 0.6) * rum;
+    const ry = (Math.sin(rt * 1.3 + 2.0) + Math.sin(rt * 2.1) * 0.6) * rum;
+
+    const c = Math.cos(this.ang);
+    const s = Math.sin(this.ang);
+    this.camera.position.set(c * CAM_RADIUS, s * CAM_RADIUS, CAM_Z);
+    this.camera.up.set(-c, -s, 0);
+    this.camera.lookAt(this.target);
+    this.camera.translateX(sx + rx);
+    this.camera.translateY(sy + ry);
+    this.camera.rotateZ(this.tilt + sr);
+  }
+}
