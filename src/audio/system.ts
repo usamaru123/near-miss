@@ -87,8 +87,9 @@ export class AudioSystem {
   }
 
   resume(): void {
-    this.engine?.resume();
-    this.music_?.unpause();
+    // wait for the context before un-pausing the music: Tone warns about work scheduled on a suspended context
+    if (this.engine) void this.engine.resume().then(() => this.music_?.unpause());
+    else this.music_?.unpause();
   }
 }
 

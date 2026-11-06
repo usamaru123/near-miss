@@ -301,8 +301,9 @@ export class AudioEngine {
         .catch(() => {
           this.unlocked = null;
         });
-    } else if (this.rawContext.state === 'suspended') {
-      void this.rawContext.resume();
+    } else if (!this.pauseMute && (this.rawContext.state as string) !== 'running') {
+      // 'suspended' (not yet allowed) or iOS's 'interrupted' (call, Siri, alarm, background): resume from this gesture
+      void this.rawContext.resume().catch(() => undefined);
     }
     return this.unlocked ?? Promise.resolve();
   }
@@ -431,11 +432,13 @@ export class AudioEngine {
     }, 700);
   }
 
-  resume(): void {
+  /** Resolves once the context is running again (after a long pause it was really suspended, and resuming takes a moment). */
+  resume(): Promise<void> {
     this.suspendToken++;
     this.pauseMute = false;
-    if (this.rawContext.state === 'suspended') void this.rawContext.resume();
+    const ready = (this.rawContext.state as string) !== 'running' ? this.rawContext.resume().catch(() => undefined) : Promise.resolve();
     this.applyVolumes(0.05);
+    return ready.then(() => undefined);
   }
 
   // ---- sidechain ----

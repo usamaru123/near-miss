@@ -16,6 +16,8 @@ import { ITEM_COLORS, ItemView } from './items';
 import { ObstacleView } from './obstacles';
 import { Debris, SpeedLines } from './particles';
 import { PostFx } from './post';
+import { settingsFor } from './quality';
+import type { QualitySettings } from './quality';
 import { Ship } from './ship';
 import { Tunnel } from './tunnel';
 
@@ -66,6 +68,10 @@ export class GameRenderer {
   private shockT = 1;
   private blurKick = 0;
   private readonly blurProj = new THREE.Vector3(0, 0, -60);
+  /** adaptive quality (DESIGN 17.6) */
+  readonly quality: QualitySettings = settingsFor(0, { tier: 0, dprCap: 2, bloomHalf: false, blurTaps: 10, particleScale: 1 });
+  private readonly box = new THREE.Box3();
+  private readonly corner = new THREE.Vector3();
 
   constructor(private readonly canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({
@@ -75,7 +81,7 @@ export class GameRenderer {
       powerPreference: 'high-performance',
       stencil: false,
     });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    this.renderer.setPixelRatio(this.pixelRatio());
     this.renderer.setClearColor(0x02020a, 1);
     this.scene.background = new THREE.Color(0x02020a);
     this.scene.fog = new THREE.Fog(0x02020a, 25, FOG_FAR);
@@ -101,12 +107,32 @@ export class GameRenderer {
     this.resize();
   }
 
+  /** Device pixel ratio capped by the current quality tier (the cap is 2 at full quality, as before). */
+  private pixelRatio(): number {
+    return Math.min(window.devicePixelRatio || 1, this.quality.dprCap);
+  }
+
+  /** Apply quality tier `tier` (0 = full): DPR cap, bloom resolution, blur taps, particle counts. */
+  setQuality(tier: number): void {
+    settingsFor(tier, this.quality);
+    const q = this.quality;
+    this.post.setQuality(q.bloomHalf, q.blurTaps);
+    this.lines.scale = q.particleScale;
+    this.debris.scale = q.particleScale;
+    this.resize();
+  }
+
+  /** Re-fit when the window size changed without a resize event (iOS toolbar / rotation quirks). */
+  checkSize(): void {
+    if (window.innerWidth !== this.width || window.innerHeight !== this.height) this.resize();
+  }
+
   resize(): void {
     const w = Math.max(1, window.innerWidth);
     const h = Math.max(1, window.innerHeight);
     this.width = w;
     this.height = h;
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    this.renderer.setPixelRatio(this.pixelRatio());
     this.post.composer.setSize(w, h, false);
     this.canvas.style.width = '100%';
     this.canvas.style.height = '100%';
@@ -279,6 +305,28 @@ export class GameRenderer {
     out.y = (-this.proj.y * 0.5 + 0.5) * this.height;
   }
 
+  /** Largest on-screen extent of the ship body as a fraction of the short screen side (debug / layout test). */
+  shipScreenFraction(): number {
+    this.ship.group.updateMatrixWorld(true);
+    this.rig.camera.updateMatrixWorld(true);
+    this.box.setFromObject(this.ship.body);
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (let i = 0; i < 8; i++) {
+      this.corner.set(i & 1 ? this.box.max.x : this.box.min.x, i & 2 ? this.box.max.y : this.box.min.y, i & 4 ? this.box.max.z : this.box.min.z);
+      this.corner.project(this.rig.camera);
+      const x = (this.corner.x * 0.5 + 0.5) * this.width;
+      const y = (-this.corner.y * 0.5 + 0.5) * this.height;
+      minX = Math.min(minX, x);
+      maxX = Math.max(maxX, x);
+      minY = Math.min(minY, y);
+      maxY = Math.max(maxY, y);
+    }
+    return Math.max(maxX - minX, maxY - minY) / Math.min(this.width, this.height);
+  }
+
   get speedBlurScale(): number {
     return this.blurKick;
   }
@@ -288,6 +336,7 @@ export class GameRenderer {
   }
 
   frame(state: GameState, realDt: number, view: ViewState): void {
+    this.checkSize();
     this.time += realDt;
     this.flashScale = view.flashScale;
     const sdt = realDt * state.timeScale;

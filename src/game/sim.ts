@@ -688,7 +688,9 @@ export function step(s: GameState, input: Input, dt: number): GameEvent[] {
       s.beatStreak = 0;
     }
   }
-  if (!s.overdrive && s.adrenaline > 0) s.adrenaline = Math.max(0, s.adrenaline - ADRENALINE_DECAY * sdtEff);
+  // A full gauge stays full until OVERDRIVE is used; otherwise it decays below the
+  // 0.999 trigger threshold within ~70 ms and OVERDRIVE is nearly impossible to fire.
+  if (!s.overdrive && s.adrenaline > 0 && s.adrenaline < 0.999) s.adrenaline = Math.max(0, s.adrenaline - ADRENALINE_DECAY * sdtEff);
   s.score += s.speed * s.multiplier * scoreMult(s) * sdtEff;
   return ev;
 }

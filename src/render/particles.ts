@@ -17,6 +17,8 @@ export class SpeedLines {
   private readonly len = new Float32Array(LINE_COUNT);
   private readonly mat: THREE.LineBasicMaterial;
   private seed = 12345;
+  /** adaptive quality: fraction of the lines that are drawn (DESIGN 17.6) */
+  scale = 1;
 
   constructor() {
     this.pos = new Float32Array(LINE_COUNT * 6);
@@ -51,7 +53,7 @@ export class SpeedLines {
   }
 
   update(dt: number, speed: number, speedFrac: number, overdrive: boolean, color: THREE.Color): void {
-    const active = Math.min(LINE_COUNT, Math.floor((60 + 200 * speedFrac) * (overdrive ? 1.3 : 1)));
+    const active = Math.min(LINE_COUNT, Math.floor((60 + 200 * speedFrac) * (overdrive ? 1.3 : 1) * this.scale));
     const stretch = 0.012 + speedFrac * 0.03 + (overdrive ? 0.02 : 0);
     const p = this.pos;
     for (let i = 0; i < active; i++) {
@@ -90,6 +92,8 @@ export class Debris {
   private readonly cg = new Float32Array(DEBRIS_MAX);
   private readonly cb = new Float32Array(DEBRIS_MAX);
   private count = 0;
+  /** adaptive quality: multiplier for the number of particles per emit (DESIGN 17.6) */
+  scale = 1;
 
   constructor() {
     const geo = new THREE.BoxGeometry(1, 1, 1);
@@ -119,7 +123,8 @@ export class Debris {
     r: number, g: number, b: number,
     flowZ = 0,
   ): void {
-    for (let k = 0; k < n && this.count < DEBRIS_MAX; k++) {
+    const total = this.scale < 1 ? Math.ceil(n * this.scale) : n;
+    for (let k = 0; k < total && this.count < DEBRIS_MAX; k++) {
       const i = this.count++;
       const u = Math.random() * Math.PI * 2;
       const v = Math.random() * 2 - 1;

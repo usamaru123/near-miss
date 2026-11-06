@@ -16,6 +16,7 @@ import {
 const RADIAL_FRAG = /* glsl */ `
 uniform float strength;
 uniform vec2 center;
+uniform float taps;
 void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor) {
   vec2 d = (uv - center);
   float len = length(d);
@@ -24,7 +25,8 @@ void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor)
   vec3 acc = vec3(0.0);
   float total = 0.0;
   for (int i = 0; i < 10; i++) {
-    float t = float(i) / 10.0;
+    if (float(i) >= taps) break;
+    float t = float(i) / taps;
     float w = 1.0 - t * 0.7;
     acc += texture2D(inputBuffer, uv - dir * t).rgb * w;
     total += w;
@@ -41,11 +43,16 @@ export class RadialBlurEffect extends Effect {
       uniforms: new Map<string, THREE.Uniform>([
         ['strength', new THREE.Uniform(0)],
         ['center', new THREE.Uniform(new THREE.Vector2(0.5, 0.5))],
+        ['taps', new THREE.Uniform(10)],
       ]),
     });
   }
   set strength(v: number) {
     (this.uniforms.get('strength') as THREE.Uniform<number>).value = v;
+  }
+  /** Number of samples along the blur direction (1..10). */
+  set taps(v: number) {
+    (this.uniforms.get('taps') as THREE.Uniform<number>).value = v;
   }
   setCenter(x: number, y: number): void {
     (this.uniforms.get('center') as THREE.Uniform<THREE.Vector2>).value.set(x, y);
@@ -87,8 +94,24 @@ export class PostFx {
     this.composer.addPass(new EffectPass(camera, this.chroma, this.sat, this.vignette, this.noise));
   }
 
+  private w = 1;
+  private h = 1;
+
   setSize(w: number, h: number): void {
-    this.composer.setSize(w, h);
+    this.w = w;
+    this.h = h;
+    this.composer.setSize(w, h, false);
+  }
+
+  /** Adaptive quality (DESIGN 17.6): half-resolution bloom and fewer radial-blur taps. */
+  setQuality(bloomHalf: boolean, blurTaps: number): void {
+    this.blur.taps = blurTaps;
+    const res = (this.bloom.mipmapBlurPass as unknown as { resolution: { scale: number } }).resolution;
+    const scale = bloomHalf ? 0.5 : 1;
+    if (res.scale !== scale) {
+      res.scale = scale;
+      this.composer.setSize(this.w, this.h, false);
+    }
   }
 
   addSpike(v: number): void {

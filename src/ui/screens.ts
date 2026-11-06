@@ -1,3 +1,5 @@
+import { shouldShowA2hsHint } from './platform';
+
 export type ScreenName = 'title' | 'pause' | 'gameover' | 'none';
 
 function el<T extends HTMLElement>(id: string): T {
@@ -39,6 +41,8 @@ export class Screens {
   onVolume: (kind: 'master' | 'bgm' | 'se', v: number) => void = () => {};
 
   constructor() {
+    // iOS Safari tab only (not standalone): tell the player how to get a full-screen game
+    if (shouldShowA2hsHint()) el('a2hs').classList.remove('hidden');
     this.reduce.addEventListener('change', () => this.onReducedFlashChange(this.reduce.checked));
     for (const k of ['master', 'bgm', 'se'] as const) {
       const input = this.sliders[k];

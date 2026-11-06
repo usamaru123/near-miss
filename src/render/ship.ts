@@ -20,6 +20,8 @@ function glowTexture(): THREE.CanvasTexture {
 /** Player ship: a flat dart with an edge outline and a glow sprite. */
 export class Ship {
   readonly group = new THREE.Group();
+  /** the opaque dart (without glow / flame); used to measure its on-screen size */
+  readonly body: THREE.Mesh;
   private readonly bodyMat: THREE.MeshBasicMaterial;
   private readonly edgeMat: THREE.LineBasicMaterial;
   private readonly glowMat: THREE.SpriteMaterial;
@@ -36,6 +38,7 @@ export class Ship {
     geo.scale(1.25, 0.45, 1);
     this.bodyMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
     const body = new THREE.Mesh(geo, this.bodyMat);
+    this.body = body;
     const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo), new THREE.LineBasicMaterial({ color: 0xffffff }));
     this.edgeMat = edges.material as THREE.LineBasicMaterial;
     this.glowMat = new THREE.SpriteMaterial({

@@ -32,6 +32,8 @@ const STREAKS = 72;
 class StreakField {
   private readonly cv = el<HTMLCanvasElement>('streaks');
   private readonly g = this.cv.getContext('2d');
+  /** adaptive quality: fraction of the streaks that are drawn */
+  scale = 1;
   private readonly ang = new Float32Array(STREAKS);
   private readonly prog = new Float32Array(STREAKS);
   private readonly spd = new Float32Array(STREAKS);
@@ -62,7 +64,7 @@ class StreakField {
     if (!g) return;
     this.fit();
     g.clearRect(0, 0, this.w, this.h);
-    const n = Math.floor(STREAKS * (0.25 + 0.75 * speedFrac) * (overdrive ? 1 : 0.9));
+    const n = Math.floor(STREAKS * (0.25 + 0.75 * speedFrac) * (overdrive ? 1 : 0.9) * this.scale);
     const cx = this.w / 2;
     const cy = this.h / 2;
     const maxR = Math.hypot(cx, cy);
@@ -106,6 +108,7 @@ export class Hud {
   private readonly adrFill = el('adr-fill');
   private readonly adrBar = el('adr-bar');
   private readonly odLabel = el('od-label');
+  private readonly odBtn = el('od-btn');
   private readonly focusFill = el('focus-fill');
   private readonly popupBox = el('popups');
   private readonly popups: HTMLElement[] = [];
@@ -128,6 +131,8 @@ export class Hud {
   private last = { score: '', mult: '', combo: '', speed: '', bpm: '', adr: -1, focus: -1 };
   private bpmValue = HEART_BASE_BPM;
   flashScale = 1;
+  /** touch layout active: floaters stay clear of the bottom gauges and buttons */
+  touch = false;
 
   constructor() {
     for (let i = 0; i < POPUPS; i++) {
@@ -155,6 +160,11 @@ export class Hud {
 
   setVisible(v: boolean): void {
     this.root.classList.toggle('hidden', !v);
+  }
+
+  /** Adaptive quality: thin out the speed streaks. */
+  setParticleScale(s: number): void {
+    this.streaks.scale = s;
   }
 
   get heartBpm(): number {
@@ -208,12 +218,14 @@ export class Hud {
       const full = s.adrenaline >= 0.999 && !s.overdrive;
       this.adrBar.classList.toggle('full', full);
       this.odLabel.classList.toggle('show', full);
+      this.odBtn.classList.toggle('ready', full);
     }
     if (s.overdrive) {
       this.adrFill.style.width = ((s.overdriveT / 5) * 100).toFixed(1) + '%';
       this.last.adr = -1;
     }
     this.adrBar.classList.toggle('od', s.overdrive);
+    this.odBtn.classList.toggle('active', s.overdrive);
     const focus = Math.round(s.focus * 200) / 200;
     if (focus !== this.last.focus) {
       this.last.focus = focus;
@@ -344,7 +356,7 @@ export class Hud {
     const w = window.innerWidth;
     const h = window.innerHeight;
     d.style.left = Math.max(70, Math.min(w - 70, x)).toFixed(0) + 'px';
-    d.style.top = Math.min(h - 34, y + live * 28).toFixed(0) + 'px';
+    d.style.top = Math.min(this.touch ? h - 92 : h - 34, y + live * 28).toFixed(0) + 'px';
     void d.offsetWidth;
     d.classList.add('go');
   }

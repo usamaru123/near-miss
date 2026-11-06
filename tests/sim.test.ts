@@ -361,3 +361,16 @@ describe('misc', () => {
     expect(run1()).toBe(run1());
   });
 });
+
+describe('adrenaline hold at full', () => {
+  it('a full gauge does not decay, so OVERDRIVE stays available', async () => {
+    const { createState, step } = await import('../src/game/sim');
+    const s = createState(7);
+    s.adrenaline = 1;
+    s.invincible = true;
+    const idle = { move: 0, overdrive: false, focus: false };
+    for (let i = 0; i < 120 * 5; i++) step(s, idle, 1 / 120);
+    expect(s.alive).toBe(true);
+    expect(s.adrenaline).toBeGreaterThanOrEqual(0.999);
+  });
+});

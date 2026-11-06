@@ -9,3 +9,8 @@ playwright-report/
 
 # Unrelated local demo, kept out of the public repo
 html-in-canvas-demo/
+
+# Local env (Supabase URL / publishable key). Never put secret keys here.
+.env
+.env.*.local
+.env.local

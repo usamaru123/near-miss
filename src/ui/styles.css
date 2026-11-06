@@ -8,8 +8,8 @@
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
-html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg); color: #fff; font-family: var(--font); -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; }
-#app { position: fixed; inset: 0; touch-action: none; overflow: hidden; }
+html, body { width: 100%; height: 100%; height: 100dvh; overflow: hidden; overscroll-behavior: none; -webkit-touch-callout: none; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; background: var(--bg); color: #fff; font-family: var(--font); -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; }
+#app { position: fixed; top: 0; left: 0; width: 100%; height: 100%; height: 100dvh; touch-action: none; overflow: hidden; -webkit-touch-callout: none; }
 #gl { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
 .hidden { display: none !important; }
 .num { font-variant-numeric: tabular-nums; }
@@ -35,7 +35,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg);
 #combo.dim { opacity: 0.4; }
 
 #hud-right { position: absolute; top: max(14px, env(safe-area-inset-top)); right: max(18px, env(safe-area-inset-right)); text-align: right; color: #fff; }
-#speed-val { font-size: clamp(26px, 5vw, 46px); font-weight: 900; }
+#speed-val { font-size: clamp(36px, 7vw, 64px); font-weight: 900; }
 .unit { font-size: clamp(10px, 1.4vw, 14px); margin-left: 6px; opacity: 0.7; letter-spacing: 0.15em; }
 #heart-row { margin-top: 4px; color: var(--red); display: flex; justify-content: flex-end; align-items: baseline; gap: 6px; }
 #bpm-val { font-size: clamp(18px, 3vw, 28px); font-weight: 700; }
@@ -65,10 +65,6 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg);
 @keyframes floatup { 0% { opacity: 1; transform: translate(-50%, 0) scale(1.25); } 15% { transform: translate(-50%, 4px) scale(1); } 100% { opacity: 0; transform: translate(-50%, 34px) scale(0.92); } }
 
 
-#focus-btn { display: none; position: absolute; right: max(14px, env(safe-area-inset-right)); bottom: max(70px, env(safe-area-inset-bottom)); width: 78px; height: 78px; border-radius: 50%; border: 2px solid var(--cyan); background: rgba(0, 240, 255, 0.12); color: var(--cyan); font: 700 12px var(--font); letter-spacing: 0.1em; pointer-events: auto; touch-action: none; }
-#focus-btn:active { background: rgba(0, 240, 255, 0.4); }
-@media (pointer: coarse) { #focus-btn { display: block; } .touch-help { display: flex !important; } }
-
 #hud.od-on #score, #hud.od-on #mult { color: #fff; }
 #hud.focus-on #hud-bottom .bar.thin { box-shadow: 0 0 14px var(--cyan); }
 
@@ -84,7 +80,6 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg);
 .help { list-style: none; font-family: var(--font-jp); font-size: clamp(11px, 1.7vw, 15px); display: grid; gap: 4px; text-align: left; margin-top: 6px; }
 .help li { display: flex; gap: 14px; }
 .help b { font-family: var(--font); min-width: 8.5em; color: var(--magenta); letter-spacing: 0.08em; }
-.touch-help { display: none !important; }
 .best { font-size: clamp(14px, 2.4vw, 22px); letter-spacing: 0.25em; color: #ffee00; text-shadow: 0 0 10px #ffee00; }
 .toggle { pointer-events: auto; font-family: var(--font-jp); font-size: clamp(11px, 1.6vw, 14px); display: flex; gap: 8px; align-items: center; cursor: pointer; opacity: 0.9; }
 .toggle input { width: 16px; height: 16px; accent-color: var(--cyan); cursor: pointer; }
@@ -170,3 +165,94 @@ h2 { font-size: clamp(34px, 8vw, 84px); font-weight: 900; letter-spacing: 0.12em
 #go-bar { position: relative; width: min(360px, 74vw); height: 14px; border: 1px solid rgba(255, 255, 255, 0.6); background: rgba(0, 0, 0, 0.5); }
 #go-bar-fill { height: 100%; width: 0; background: linear-gradient(90deg, #0099aa, var(--cyan)); box-shadow: 0 0 12px var(--cyan); transition: width 0.6s ease-out; }
 #go-pct { position: absolute; inset: 0; display: grid; place-items: center; font-family: var(--font-jp); font-size: 11px; font-weight: 700; letter-spacing: 0.1em; text-shadow: 0 0 4px #000; }
+
+/* ======================================================================
+   v4: mobile (DESIGN 17). body[data-input] is set by src/input/inputMode.ts:
+   'touch' after the last touch, 'kbd' after the last key / mouse. Desktop (kbd) is unchanged.
+   ====================================================================== */
+:root {
+  --sa-t: env(safe-area-inset-top, 0px);
+  --sa-r: env(safe-area-inset-right, 0px);
+  --sa-b: env(safe-area-inset-bottom, 0px);
+  --sa-l: env(safe-area-inset-left, 0px);
+  --btn: 68px; /* round touch buttons (>= 56 px hit area) */
+  --pausebtn: 56px;
+}
+* { -webkit-touch-callout: none; }
+button { -webkit-appearance: none; appearance: none; font-family: var(--font); }
+
+/* wording that depends on the input device */
+body[data-input='touch'] .m-kbd { display: none !important; }
+body:not([data-input='touch']) .m-touch { display: none !important; }
+
+/* iOS Safari "Add to Home Screen" hint: only inside a browser tab (main.ts un-hides it), small */
+.a2hs { font-family: var(--font-jp); font-size: clamp(10px, 1.5vw, 12px); letter-spacing: 0.06em; opacity: 0.7; }
+
+/* touch buttons: hidden unless the touch layout is active */
+.tbtn { display: none; position: absolute; pointer-events: auto; touch-action: none; padding: 0; border: 0; background: transparent; color: #fff; cursor: pointer; text-shadow: none; font-weight: 900; -webkit-tap-highlight-color: transparent; }
+body[data-input='touch'] .tbtn { display: block; }
+
+/* pause: 56 px hit area, smaller visible disc, top right inside the safe area */
+#pause-btn { top: max(10px, var(--sa-t)); right: max(12px, var(--sa-r)); width: var(--pausebtn); height: var(--pausebtn); }
+#pause-btn::before { content: ''; position: absolute; inset: 9px; border-radius: 50%; border: 1.5px solid rgba(255, 255, 255, 0.5); background: rgba(0, 0, 10, 0.4); }
+#pause-btn i { position: absolute; left: 50%; top: 50%; width: 11px; height: 13px; transform: translate(-50%, -50%); border-left: 4px solid rgba(255, 255, 255, 0.85); border-right: 4px solid rgba(255, 255, 255, 0.85); }
+#pause-btn:active::before { background: rgba(255, 255, 255, 0.3); }
+
+/* OVERDRIVE (bottom left) and FOCUS (bottom right, hold) */
+#od-btn, #focus-btn { bottom: calc(var(--sa-b) + 16px); width: var(--btn); height: var(--btn); border-radius: 50%; border: 2px solid; font-size: 8px; letter-spacing: 0; line-height: 1.1; white-space: nowrap; }
+#od-btn { left: max(14px, var(--sa-l)); border-color: var(--red); color: #ff8d98; background: rgba(255, 26, 46, 0.1); opacity: 0.55; }
+#focus-btn { right: max(14px, var(--sa-r)); border-color: var(--cyan); color: var(--cyan); background: rgba(0, 240, 255, 0.12); font-size: 12px; letter-spacing: 0.1em; }
+#focus-btn:active, #focus-btn.held { background: rgba(0, 240, 255, 0.4); }
+/* gauge full: the button lights up and pulses */
+#od-btn.ready { opacity: 1; color: #fff; background: rgba(255, 26, 46, 0.45); box-shadow: 0 0 22px var(--red), inset 0 0 14px rgba(255, 90, 106, 0.7); animation: odpulse 0.55s ease-in-out infinite alternate; }
+#od-btn.active { opacity: 1; color: #fff; background: rgba(255, 255, 255, 0.35); border-color: #fff; }
+@keyframes odpulse { from { transform: scale(1); } to { transform: scale(1.09); } }
+
+body[data-input='touch'] {
+  /* gauges sit between the two bottom buttons and above the home indicator */
+  --edge-l: max(14px, var(--sa-l));
+  --edge-r: max(14px, var(--sa-r));
+  --gauge-side: calc(max(var(--edge-l), var(--edge-r)) + var(--btn) + 12px);
+}
+body[data-input='touch'] #hud-bottom { bottom: calc(var(--sa-b) + 16px); width: min(560px, calc(100vw - 2 * var(--gauge-side))); }
+body[data-input='touch'] .bar-caption { font-size: clamp(9px, 2.4vmin, 11px); letter-spacing: 0.12em; }
+body[data-input='touch'] #od-label { font-size: clamp(10px, 3.2vmin, 14px); letter-spacing: 0.14em; height: 1.4em; }
+/* top row: score block left, speed block right of the pause button; fonts from vmin so portrait and landscape both read */
+body[data-input='touch'] #hud-left { top: max(10px, var(--sa-t)); left: var(--edge-l); }
+body[data-input='touch'] #hud-right { top: max(10px, var(--sa-t)); right: calc(max(12px, var(--sa-r)) + var(--pausebtn) + 6px); }
+body[data-input='touch'] #score { font-size: clamp(26px, max(5vw, 7vmin), 48px); }
+body[data-input='touch'] #mult { font-size: clamp(20px, max(3.4vw, 5.4vmin), 34px); }
+body[data-input='touch'] #combo { font-size: clamp(11px, max(1.8vw, 3vmin), 18px); }
+body[data-input='touch'] #speed-val { font-size: clamp(30px, min(max(7vw, 8.6vmin), 13vmin), 64px); }
+body[data-input='touch'] .unit { font-size: clamp(9px, max(1.4vw, 2.4vmin), 14px); margin-left: 4px; }
+body[data-input='touch'] #bpm-val { font-size: clamp(16px, max(3vw, 4.4vmin), 28px); }
+body[data-input='touch'] #heart { font-size: clamp(20px, max(3.4vw, 5vmin), 34px); }
+body[data-input='touch'] #effects { flex-wrap: wrap; gap: 6px; max-width: 46vw; }
+body[data-input='touch'] .fx { width: clamp(26px, 4.6vmin, 44px); height: clamp(26px, 4.6vmin, 44px); }
+body[data-input='touch'] #pace { font-size: clamp(11px, max(1.9vw, 3vmin), 19px); }
+/* big popups sit below the HUD block on portrait screens (still above the central no-go circle) */
+@media (orientation: portrait) {
+  body[data-input='touch'] #popups { top: max(12%, calc(var(--sa-t) + 124px)); }
+}
+@media (orientation: landscape) {
+  body[data-input='touch'] #popups { top: max(8%, calc(var(--sa-t) + 6px)); }
+}
+
+/* screens: keep content inside the safe area */
+.screen { padding: max(16px, var(--sa-t)) max(16px, var(--sa-r)) max(16px, var(--sa-b)) max(16px, var(--sa-l)); }
+body[data-input='touch'] .help { font-size: clamp(11px, 3.3vmin, 15px); }
+body[data-input='touch'] .help b { min-width: 7.5em; }
+body[data-input='touch'] .press { font-size: clamp(15px, 4.2vmin, 24px); }
+@media (max-height: 460px) {
+  .screen { gap: 6px; }
+  .sub { font-size: clamp(12px, 4vh, 20px); letter-spacing: 0.3em; }
+  #vols { font-size: 10px; }
+  /* short landscape: the game-over card has to fit in the height */
+  h2 { font-size: clamp(26px, 10vh, 48px); }
+  .go-score { font-size: clamp(28px, 12vh, 54px); }
+  #new-record { font-size: clamp(13px, 4.5vh, 20px); }
+  .go-vs { font-size: clamp(11px, 4vh, 16px); min-height: 0; }
+  #go-bar { height: 12px; }
+  .stats { grid-template-columns: repeat(4, auto); gap: 4px 22px; margin-top: 0; }
+  .stats dd { font-size: clamp(14px, 4.6vh, 20px); }
+}

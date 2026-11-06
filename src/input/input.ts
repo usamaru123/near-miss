@@ -9,24 +9,35 @@ export class InputManager {
   private focusKey = false;
   private focusTouch = false;
   private touchMove = 0;
+  /** Steering fingers by touch identifier (insertion order = oldest first). Fingers on buttons never get in here. */
+  private readonly steer = new Map<number, number>();
   onAction: (a: Action) => void = () => {};
 
   constructor(root: HTMLElement) {
     window.addEventListener('keydown', (e) => this.keyDown(e));
     window.addEventListener('keyup', (e) => this.keyUp(e));
-    window.addEventListener('blur', () => this.clear());
+    // window 'blur' fires spuriously on iOS (long press, system gestures, toolbar); it must only release keys,
+    // never pause, and must not drop fingers that are still down (touchend / touchcancel handle those)
+    window.addEventListener('blur', () => this.releaseKeys());
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) this.clear();
+    });
 
-    const ignore = (t: EventTarget | null): boolean =>
-      t instanceof Element && t.closest('.toggle, #focus-btn, button, input, label') !== null;
+    const ignore = (t: EventTarget | null): boolean => t instanceof Element && t.closest('.toggle, button, input, label') !== null;
 
     root.addEventListener(
       'touchstart',
       (e) => {
         if (ignore(e.target)) return;
         e.preventDefault();
+        for (let i = 0; i < e.changedTouches.length; i++) {
+          const t = e.changedTouches[i];
+          this.steer.set(t.identifier, t.clientX);
+        }
         this.onAction('tap');
-        if (e.touches.length >= 2) this.onAction('overdrive');
-        this.updateTouch(e);
+        // second steering finger = OVERDRIVE (kept as a helper next to the button); a finger held on FOCUS does not count
+        if (this.steer.size >= 2) this.onAction('overdrive');
+        this.updateTouch();
       },
       { passive: false },
     );
@@ -35,12 +46,17 @@ export class InputManager {
       (e) => {
         if (ignore(e.target)) return;
         e.preventDefault();
-        this.updateTouch(e);
+        for (let i = 0; i < e.changedTouches.length; i++) {
+          const t = e.changedTouches[i];
+          if (this.steer.has(t.identifier)) this.steer.set(t.identifier, t.clientX);
+        }
+        this.updateTouch();
       },
       { passive: false },
     );
     const end = (e: TouchEvent): void => {
-      this.updateTouch(e);
+      for (let i = 0; i < e.changedTouches.length; i++) this.steer.delete(e.changedTouches[i].identifier);
+      this.updateTouch();
     };
     root.addEventListener('touchend', end);
     root.addEventListener('touchcancel', end);
@@ -49,40 +65,92 @@ export class InputManager {
       this.onAction('tap');
     });
 
-    const fb = document.getElementById('focus-btn');
-    if (fb) {
-      const on = (e: Event): void => {
+    // iOS Safari ignores user-scalable=no: block pinch, double-tap zoom, long-press menu and text selection by hand
+    const stop = (e: Event): void => e.preventDefault();
+    for (const type of ['gesturestart', 'gesturechange', 'gestureend', 'dblclick']) {
+      document.addEventListener(type, stop, { passive: false });
+    }
+    // long-press menu: only in touch mode (desktop keeps its right-click menu)
+    document.addEventListener('contextmenu', (e) => {
+      if (document.body.dataset.input === 'touch') e.preventDefault();
+    });
+    document.addEventListener('selectstart', (e) => {
+      if (!(e.target instanceof Element && e.target.closest('input'))) e.preventDefault();
+    });
+
+    // OVERDRIVE: a tap on the button
+    const od = document.getElementById('od-btn');
+    if (od) {
+      od.addEventListener('pointerdown', (e) => {
         e.preventDefault();
         e.stopPropagation();
-        this.focusTouch = true;
+        this.onAction('overdrive');
+      });
+    }
+
+    // PAUSE: fires on click (finger lifted on the button), so a finger sliding in from the steering area cannot pause
+    const pb = document.getElementById('pause-btn');
+    if (pb) {
+      pb.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.onAction('pause');
+      });
+      pb.addEventListener('pointerdown', (e) => e.stopPropagation());
+    }
+
+    // FOCUS: hold
+    const fb = document.getElementById('focus-btn');
+    if (fb) {
+      const set = (v: boolean): void => {
+        this.focusTouch = v;
+        fb.classList.toggle('held', v);
         this.refresh();
       };
+      fb.addEventListener('pointerdown', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        set(true);
+      });
       const off = (e: Event): void => {
         e.stopPropagation();
-        this.focusTouch = false;
-        this.refresh();
+        set(false);
       };
-      fb.addEventListener('pointerdown', on);
       fb.addEventListener('pointerup', off);
       fb.addEventListener('pointercancel', off);
       fb.addEventListener('pointerleave', off);
-      fb.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true });
+      fb.addEventListener('contextmenu', (e) => e.preventDefault());
     }
+    for (const b of [od, pb, fb]) b?.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true });
   }
 
-  private updateTouch(e: TouchEvent): void {
-    const t = e.touches;
-    if (t.length === 0) this.touchMove = 0;
-    else {
-      const x = t[0].clientX;
+  private updateTouch(): void {
+    this.touchMove = 0;
+    for (const x of this.steer.values()) {
       this.touchMove = x < window.innerWidth / 2 ? -1 : 1;
+      break; // the oldest finger steers
     }
+    this.refresh();
+  }
+
+  /** Forget every finger (pause / backgrounding): the matching touchend may never arrive. */
+  releaseTouch(): void {
+    this.focusTouch = false;
+    this.steer.clear();
+    this.touchMove = 0;
+    document.getElementById('focus-btn')?.classList.remove('held');
+    this.refresh();
+  }
+
+  private releaseKeys(): void {
+    this.left = this.right = this.focusKey = false;
     this.refresh();
   }
 
   private clear(): void {
     this.left = this.right = this.focusKey = this.focusTouch = false;
+    this.steer.clear();
     this.touchMove = 0;
+    document.getElementById('focus-btn')?.classList.remove('held');
     this.refresh();
   }
 

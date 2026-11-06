@@ -24,21 +24,21 @@ export class ShieldBubble {
   private amt = 0;
 
   constructor() {
-    const geo = new THREE.IcosahedronGeometry(1.5, 1);
+    const geo = new THREE.IcosahedronGeometry(0.86, 1);
     this.fillMat = new THREE.MeshBasicMaterial({
       color: 0x3a96ff,
       transparent: true,
-      opacity: 0.16,
+      opacity: 0.06,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
       side: THREE.DoubleSide,
       fog: false,
     });
     this.wireMat = new THREE.MeshBasicMaterial({
-      color: new THREE.Color(0x66b4ff).multiplyScalar(2),
+      color: new THREE.Color(0x66b4ff).multiplyScalar(1.1),
       wireframe: true,
       transparent: true,
-      opacity: 0.55,
+      opacity: 0.3,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
       fog: false,
@@ -58,8 +58,8 @@ export class ShieldBubble {
     const s = this.amt * (1 + 0.05 * Math.sin(this.t * 9));
     this.group.scale.set(s * 1.0, s * 0.8, s * 1.5);
     this.group.rotation.set(this.t * 0.9, this.t * 1.3, 0);
-    this.fillMat.opacity = 0.16 * this.amt;
-    this.wireMat.opacity = 0.5 * this.amt;
+    this.fillMat.opacity = 0.06 * this.amt;
+    this.wireMat.opacity = 0.3 * this.amt;
   }
 }
 

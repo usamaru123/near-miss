@@ -25,6 +25,9 @@ import type { GameEvent, GameState, Input } from './game/types';
 import { ITEM_KINDS } from './game/constants';
 import type { ItemKind } from './game/constants';
 import { InputManager } from './input/input';
+import { InputModeTracker } from './input/inputMode';
+import { QualityGovernor } from './render/quality';
+import { haptic, isAndroid, setAudioSessionPlayback, tryFullscreen } from './ui/platform';
 import type { Action } from './input/input';
 import { GameRenderer } from './render/renderer';
 import { Hud } from './ui/hud';
@@ -48,6 +51,12 @@ interface NearMissDebug {
   musicSync(): Record<string, unknown>;
   /** Worst-case audio load for `seconds`; reports limiter reduction and underrun indicators. */
   audioStress(seconds: number): Promise<Record<string, unknown>>;
+  /** Fill the adrenaline gauge and hold it full until OVERDRIVE starts (touch OVERDRIVE button test). */
+  fillAdrenaline(): void;
+  /** Camera / canvas facts for the mobile layout tests. */
+  getView(): Record<string, unknown>;
+  /** Force an adaptive-quality tier (0 = full) for diagnostics. */
+  setQualityTier(n: number): void;
 }
 declare global {
   interface Window {
@@ -83,6 +92,8 @@ function lsSet(key: string, v: string): void {
   }
 }
 
+setAudioSessionPlayback();
+
 const canvas = document.getElementById('gl') as HTMLCanvasElement;
 const app = document.getElementById('app') as HTMLElement;
 
@@ -92,7 +103,24 @@ const music = audio.music;
 const sfx = audio.sfx;
 const hud = new Hud();
 const screens = new Screens();
+const inputMode = new InputModeTracker();
 const input = new InputManager(app);
+hud.touch = inputMode.mode === 'touch';
+inputMode.onChange = (m) => {
+  hud.touch = m === 'touch';
+};
+// adaptive quality (DESIGN 17.6): only ever steps down, silently
+const quality = new QualityGovernor(Math.min(window.devicePixelRatio || 1, 2));
+function applyQuality(): void {
+  renderer.setQuality(quality.tier);
+  hud.setParticleScale(renderer.quality.particleScale);
+}
+/** Pausing is never triggered by a tap that is part of the same touch; resume needs a fresh, deliberate tap. */
+const RESUME_LOCK_MS = 350;
+let pausedAt = 0;
+let wantFullscreen = false;
+/** debug: keep the adrenaline gauge full until OVERDRIVE starts (the natural full window is only a few frames) */
+let holdAdrenaline = false;
 
 let screen: Screen = 'title';
 let state: GameState = makeTitleState();
@@ -257,6 +285,8 @@ function showTitle(): void {
 function pauseGame(): void {
   if (screen !== 'playing' || !state.alive) return;
   screen = 'paused';
+  pausedAt = performance.now();
+  input.releaseTouch();
   screens.show('pause');
   audio.suspend();
 }
@@ -266,6 +296,7 @@ function resumeGame(): void {
   screen = 'playing';
   screens.show('none');
   audio.resume();
+  quality.resetWindow();
   acc = 0;
 }
 
@@ -316,12 +347,13 @@ function onAction(a: Action): void {
       if (screen === 'title') {
         if (a !== 'retry' && audioReady) {
           (document.activeElement as HTMLElement | null)?.blur?.();
+          if (inputMode.mode === 'touch' && isAndroid()) wantFullscreen = true; // requested in touchend (a valid gesture)
           startCountdown(takeSeed());
         }
       } else if (screen === 'countdown') {
         /* locked until GO */
       } else if (screen === 'paused') {
-        if (a !== 'retry') resumeGame();
+        if (a !== 'retry' && performance.now() - pausedAt >= RESUME_LOCK_MS) resumeGame();
       } else if (screen === 'gameover') {
         if (performance.now() - gameOverAt >= GAMEOVER_INPUT_LOCK * 1000) startRun(takeSeed());
       } else if (screen === 'playing' && a === 'space') {
@@ -367,6 +399,7 @@ function handleEvent(e: GameEvent): void {
       hud.flash('#ff1030', 0.3);
       break;
     case 'clutchSuccess':
+      haptic(30);
       sfx.clutchSuccess();
       hud.popup('CLUTCH!! +' + e.points, 'clutch');
       hud.popScore();
@@ -421,6 +454,7 @@ function handleEvent(e: GameEvent): void {
       sfx.multUp(e.mult);
       break;
     case 'death':
+      haptic(60);
       sfx.death();
       sfx.stopWind();
       audio.setFocus(false);
@@ -435,6 +469,8 @@ function handleEvent(e: GameEvent): void {
       hud.flash('#ffffff', 0.18);
       break;
     case 'overdriveStart':
+      holdAdrenaline = false;
+      haptic(25);
       sfx.overdriveStart();
       music.setOverdrive(true);
       hud.overdriveBanner(true);
@@ -482,6 +518,7 @@ function updatePace(): void {
 }
 
 function simStep(): void {
+  if (holdAdrenaline) state.adrenaline = 1;
   simInput.move = input.move;
   simInput.focus = input.focus;
   simInput.overdrive = overdriveQueued;
@@ -554,6 +591,8 @@ function frame(now: number): void {
     state.angVel = Math.cos(titleTime * 0.45) * 0.9 * 0.45;
   }
 
+  if (screen === 'playing' && quality.tick(wall)) applyQuality();
+
   if (screen !== 'paused') {
     const speedFrac = Math.max(0, Math.min(1, (state.baseSpeed - SPEED_BASE) / (SPEED_MAX - SPEED_BASE)));
     const beat = screen === 'playing' ? simBeatPulse() : music.beatPulse();
@@ -580,14 +619,34 @@ function frame(now: number): void {
 }
 
 window.addEventListener('resize', () => renderer.resize());
-window.addEventListener('blur', () => pauseGame());
+window.addEventListener('orientationchange', () => {
+  renderer.resize();
+  // iOS reports the new size a moment after the event
+  window.setTimeout(() => renderer.resize(), 120);
+  window.setTimeout(() => renderer.resize(), 400);
+});
+window.visualViewport?.addEventListener('resize', () => renderer.resize());
+// Auto-pause ONLY when the page is really hidden (app switch, tab switch, screen lock). window 'blur' is NOT used:
+// iOS Safari fires it for a long press, the edge-swipe system gestures and toolbar interaction (DESIGN 17.4).
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) pauseGame();
 });
 
-// first interaction unlocks audio (also covers pointer/keyboard before any action fires)
+// first interaction unlocks audio (also covers pointer/keyboard before any action fires).
+// iOS only treats touchend (not touchstart / pointerdown) as an audio-unlocking gesture.
 window.addEventListener('pointerdown', gesture, { passive: true });
 window.addEventListener('keydown', gesture);
+window.addEventListener(
+  'touchend',
+  () => {
+    gesture();
+    if (wantFullscreen) {
+      wantFullscreen = false;
+      tryFullscreen(app);
+    }
+  },
+  { passive: true },
+);
 
 window.__NEARMISS__ = {
   getState() {
@@ -631,6 +690,10 @@ window.__NEARMISS__ = {
       hasGhost: pace.hasTrace,
       ghostVisible: ghostView.visible,
       paceDiff: pace.out.diff,
+      inputMode: inputMode.mode,
+      qualityTier: quality.tier,
+      fps: Math.round(quality.fps * 10) / 10,
+      fullscreen: !!document.fullscreenElement,
     };
   },
   forceDeath() {
@@ -677,6 +740,33 @@ window.__NEARMISS__ = {
       beatPos: state.beatPos,
       errors: audio.musicErrors,
     };
+  },
+  fillAdrenaline() {
+    state.adrenaline = 1;
+    holdAdrenaline = true;
+  },
+  getView() {
+    const cam = renderer.rig.camera;
+    const aspect = cam.aspect;
+    const rad = Math.PI / 180;
+    return {
+      width: window.innerWidth,
+      height: window.innerHeight,
+      aspect,
+      dpr: renderer.renderer.getPixelRatio(),
+      fov: cam.fov,
+      fovBase: renderer.rig.fovBase,
+      hfov: (2 * Math.atan(Math.tan(cam.fov * rad * 0.5) * aspect)) / rad,
+      hfovBase: (2 * Math.atan(Math.tan(renderer.rig.fovBase * rad * 0.5) * aspect)) / rad,
+      shipFraction: renderer.shipScreenFraction(),
+      canvasW: canvas.width,
+      canvasH: canvas.height,
+      quality: { ...renderer.quality },
+    };
+  },
+  setQualityTier(n: number) {
+    quality.tier = Math.max(0, Math.min(6, Math.floor(n)));
+    applyQuality();
   },
   async audioStress(seconds: number) {
     await audio.unlock();

@@ -7,12 +7,16 @@ import {
   FOV_OVERDRIVE,
   LAUNCH_START_FOV,
   MAX_ANG_VEL,
+  SHIP_RADIUS,
   SPEED_BASE,
   SPEED_MAX,
 } from '../game/constants';
+import { FOV_HARD_MAX, baseVfov, camZFor } from './viewFit';
 
 const CAM_RADIUS = 2.9;
 const CAM_Z = 6.5;
+/** Radial distance between the camera and the ship (ship radius - camera radius). */
+const SHIP_OFFSET = SHIP_RADIUS - CAM_RADIUS;
 
 /** Follows the ship angle (ship stays at screen bottom; the tunnel rolls), with lag, tilt, FOV and trauma shake. */
 export class CameraRig {
@@ -24,13 +28,27 @@ export class CameraRig {
   private trauma = 0;
   private time = 0;
   private readonly target = new THREE.Vector3(0, 0, -40);
+  /** Portrait widening (deg) added on top of the speed-driven FOV; 0 on landscape. */
+  private fovOffset = 0;
+  private camZ = CAM_Z;
 
   constructor(aspect: number) {
     this.camera = new THREE.PerspectiveCamera(FOV_MIN, aspect, 0.1, 420);
+    this.setAspect(aspect);
+  }
+
+  /** Base vertical FOV for the current aspect, before the speed boost (DESIGN 17.2). */
+  get fovBase(): number {
+    return FOV_MIN + this.fovOffset;
   }
 
   setAspect(a: number): void {
     this.camera.aspect = a;
+    const base = baseVfov(a, FOV_MIN);
+    this.fovOffset = base - FOV_MIN;
+    // landscape keeps the original camera; portrait pulls back only if the ship would exceed 12 % of the short side
+    this.camZ = a >= 1 ? CAM_Z : camZFor(base, a, CAM_Z, SHIP_OFFSET);
+    this.camera.fov = base;
     this.camera.updateProjectionMatrix();
   }
 
@@ -69,7 +87,7 @@ export class CameraRig {
     const fovTarget = (overdrive ? FOV_OVERDRIVE : FOV_MIN + (FOV_MAX - FOV_MIN) * speedFrac) + fovBoost;
     this.fov += (fovTarget - this.fov) * (1 - Math.exp(-dt / 0.1));
     this.fovKickV *= Math.exp(-dt * 3.5);
-    const fovNow = this.fov + this.fovKickV;
+    const fovNow = Math.min(FOV_HARD_MAX, this.fov + this.fovKickV + this.fovOffset);
     if (Math.abs(this.camera.fov - fovNow) > 0.02) {
       this.camera.fov = fovNow;
       this.camera.updateProjectionMatrix();
@@ -90,7 +108,7 @@ export class CameraRig {
 
     const c = Math.cos(this.ang);
     const s = Math.sin(this.ang);
-    this.camera.position.set(c * CAM_RADIUS, s * CAM_RADIUS, CAM_Z);
+    this.camera.position.set(c * CAM_RADIUS, s * CAM_RADIUS, this.camZ);
     this.camera.up.set(-c, -s, 0);
     this.camera.lookAt(this.target);
     this.camera.translateX(sx + rx);

@@ -4,6 +4,13 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
   <meta name="theme-color" content="#000000" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="NEAR//MISS" />
+  <meta name="format-detection" content="telephone=no" />
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
   <title>NEAR//MISS</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23000'/%3E%3Cpath d='M16 4 28 28 16 22 4 28z' fill='%2300f0ff'/%3E%3C/svg%3E" />
 </head>
@@ -33,26 +40,31 @@
         </div>
       </div>
       <div id="hud-bottom">
-        <div id="od-label">SPACE <span class="sym">→</span> OVERDRIVE</div>
+        <div id="od-label"><span class="m-kbd">SPACE <span class="sym">→</span> </span>OVERDRIVE</div>
         <div class="bar" id="adr-bar"><div class="fill" id="adr-fill"></div></div>
         <div class="bar thin" id="focus-bar"><div class="fill" id="focus-fill"></div></div>
-        <div class="bar-caption"><span>ADRENALINE</span><span>FOCUS [SHIFT]</span></div>
+        <div class="bar-caption"><span>ADRENALINE</span><span>FOCUS<span class="m-kbd"> [SHIFT]</span></span></div>
       </div>
       <div id="floaters"></div>
       <div id="popups"></div>
-      <button id="focus-btn" type="button">FOCUS</button>
+      <button id="pause-btn" class="tbtn" type="button" aria-label="Pause"><i></i></button>
+      <button id="od-btn" class="tbtn" type="button"><span>OVERDRIVE</span></button>
+      <button id="focus-btn" class="tbtn" type="button"><span>FOCUS</span></button>
     </div>
 
     <section id="title" class="screen">
       <h1 class="logo glitch" data-text="NEAR//MISS">NEAR//MISS</h1>
       <p class="sub">スレスレで生き残れ</p>
       <ul class="help">
-        <li><b><span class="sym">← →</span> / A D</b><span>周回移動</span></li>
-        <li><b>SPACE</b><span>OVERDRIVE（ゲージ満タン時）</span></li>
-        <li><b>SHIFT</b><span>FOCUS（スローモー）</span></li>
-        <li><b>P / ESC</b><span>ポーズ</span></li>
-        <li><b>M</b><span>ミュート</span></li>
-        <li class="touch-help"><b>TOUCH</b><span>左右を押す / 2本指で OVERDRIVE / FOCUS ボタン</span></li>
+        <li class="m-kbd"><b><span class="sym">← →</span> / A D</b><span>周回移動</span></li>
+        <li class="m-kbd"><b>SPACE</b><span>OVERDRIVE（ゲージ満タン時）</span></li>
+        <li class="m-kbd"><b>SHIFT</b><span>FOCUS（スローモー）</span></li>
+        <li class="m-kbd"><b>P / ESC</b><span>ポーズ</span></li>
+        <li class="m-kbd"><b>M</b><span>ミュート</span></li>
+        <li class="m-touch"><b>TAP</b><span>画面の左 / 右を押し続けて周回移動</span></li>
+        <li class="m-touch"><b>OVERDRIVE</b><span>左下ボタン（ゲージ満タン時）</span></li>
+        <li class="m-touch"><b>FOCUS</b><span>右下ボタンを押している間スローモー</span></li>
+        <li class="m-touch"><b>II</b><span>右上ボタンでポーズ</span></li>
       </ul>
       <div id="best-title" class="best">BEST 0</div>
       <label class="toggle"><input type="checkbox" id="reduce-flash" /><span>フラッシュ軽減 / REDUCED FLASH</span></label>
@@ -65,12 +77,13 @@
         <div id="load-bar"><div id="load-fill"></div></div>
         <div id="load-text">LOADING AUDIO 0%</div>
       </div>
-      <div id="press" class="press hidden">PRESS SPACE / TAP TO START</div>
+      <div id="press" class="press hidden"><span class="m-kbd">PRESS SPACE / </span>TAP TO START</div>
+      <p id="a2hs" class="a2hs hidden">共有 <span class="sym">→</span> ホーム画面に追加 で全画面プレイ</p>
     </section>
 
     <section id="pause" class="screen hidden">
       <h2>PAUSED</h2>
-      <div class="press blink">P / ESC / TAP TO RESUME</div>
+      <div class="press blink"><span class="m-kbd">P / ESC / </span>TAP TO RESUME</div>
     </section>
 
     <section id="gameover" class="screen hidden">
@@ -85,7 +98,7 @@
         <div><dt>TOP SPEED</dt><dd id="go-speed">0 km/h</dd></div>
         <div><dt>TIER</dt><dd id="go-tier">1</dd></div>
       </dl>
-      <div class="press blink">SPACE / R / TAP — RETRY</div>
+      <div class="press blink"><span class="m-kbd">SPACE / R / TAP — RETRY</span><span class="m-touch">TAP TO RETRY</span></div>
     </section>
 
     <div id="countdown" class="hidden"></div>
